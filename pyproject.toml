@@ -26,7 +26,7 @@ line-length = 100
 
 [tool.ruff.lint]
 select = ["B", "E", "F", "I", "RUF", "S", "SIM", "UP"]
-# ExifTool runs from PATH by design, with no shell.
+# ExifTool runs from PATH or from the copy that the tool downloads, with no shell.
 ignore = ["S603", "S607"]
 
 [tool.ruff.lint.per-file-ignores]
