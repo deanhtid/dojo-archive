@@ -141,15 +141,15 @@ MUTANTS = (
         "bytes-final",
         "download a saved file again when its post changes",
         CHANGE,
-        "                    elif copies:\n                        futures[executor.submit(retag, job, tagging)] = job\n",
-        "                    elif copies:\n                        futures[executor.submit(download, downloader, job, tagging)] = job\n",
+        "                    elif copies:\n                        futures[executor.submit(retag, job, exiftool)] = job\n",
+        "                    elif copies:\n                        futures[executor.submit(download, downloader, job, exiftool)] = job\n",
     ),
     (
         "bytes-final",
         "change the JPEG width during a re-tag",
         CHANGE,
-        "        return Ready(partial, final, finish(partial, job, tagging))\n",
-        '        ready = Ready(partial, final, finish(partial, job, tagging))\n        if partial.suffix == ".jpg":\n            data = partial.read_bytes()\n            at = data.index(b"\\xff\\xc0") + 7\n            partial.write_bytes(data[:at] + (2).to_bytes(2) + data[at + 2 :])\n        return ready\n',
+        "        return Ready(partial, final, finish(partial, job, exiftool))\n",
+        '        ready = Ready(partial, final, finish(partial, job, exiftool))\n        if partial.suffix == ".jpg":\n            data = partial.read_bytes()\n            at = data.index(b"\\xff\\xc0") + 7\n            partial.write_bytes(data[:at] + (2).to_bytes(2) + data[at + 2 :])\n        return ready\n',
     ),
 )
 

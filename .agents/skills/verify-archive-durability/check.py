@@ -39,7 +39,7 @@ OWN_FOLDER = "output/Favourites/"
 JPEG_TAG_SEGMENTS = {*range(0xE0, 0xF0), 0xFE}
 MAIN_FILE = str(Path(dojo_archive.__file__).resolve())
 SOURCE_LINES = Path(MAIN_FILE).read_text(encoding="utf-8").splitlines()
-REAL_WHICH = shutil.which
+REAL_FIND_EXIFTOOL = dojo_archive.find_exiftool
 SCHOOL = dojo_archive.School("school-id", "Test First School", dojo_archive.Address("Testville"))
 ACCOUNT = dojo_archive.Account(
     zone=ZoneInfo("UTC"), school_of={SCHOOL.id: SCHOOL, "class-id": SCHOOL}, country="zz"
@@ -291,7 +291,7 @@ def write_tree(root: Path, tree: dict[str, bytes]) -> None:
 def sync(root: Path, network: FakeNetwork, exiftool: bool = True, gps: bool = True) -> int:
     """Run the tool once. `network.summary` keeps the line of counts."""
     dojo_archive.new_session = lambda: network
-    dojo_archive.shutil.which = REAL_WHICH if exiftool else lambda _: None
+    dojo_archive.find_exiftool = REAL_FIND_EXIFTOOL if exiftool else lambda _session: None
     args = argparse.Namespace(since=None, gps=gps)
     output = io.StringIO()
     with contextlib.redirect_stdout(output), contextlib.redirect_stderr(io.StringIO()):

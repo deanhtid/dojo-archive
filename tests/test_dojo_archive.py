@@ -1,4 +1,6 @@
 import contextlib
+import hashlib
+import http.server
 import io
 import json
 import os
@@ -9,7 +11,11 @@ import stat
 import struct
 import subprocess
 import sys
+import tarfile
+import threading
 import time
+import zipfile
+from dataclasses import replace
 from datetime import datetime
 from pathlib import Path
 
@@ -20,6 +26,7 @@ import dojo_archive
 from dojo_archive import Account, Address, Located, Place, School
 
 FIXTURES = Path(__file__).parent / "fixtures"
+EXIFTOOL = ["exiftool"]
 JPEG = (FIXTURES / "pixel.jpg").read_bytes()
 POST_ID = "a" * 24
 ATTACHMENT_ID = "b" * 24
@@ -295,11 +302,11 @@ def archive(home, typed, tmp_path, monkeypatch):
 
 @pytest.fixture
 def no_exiftool(monkeypatch):
-    real_which = shutil.which
+    real_find = dojo_archive.find_exiftool
 
     def set_installed(installed):
         monkeypatch.setattr(
-            dojo_archive.shutil, "which", real_which if installed else lambda _: None
+            dojo_archive, "find_exiftool", real_find if installed else lambda _session: None
         )
 
     set_installed(False)
@@ -894,7 +901,7 @@ def test_write_metadata_round_trip(tmp_path, name, monkeypatch):
     path = tmp_path / name
     shutil.copy(FIXTURES / name, path)
     post = parse(item(), Account(zone=dojo_archive.parse_zone("Europe/London"), school_of={}))
-    dojo_archive.write_metadata(path, post, Located(FAR_PLACE, post.time), None)
+    dojo_archive.write_metadata(EXIFTOOL, path, post, Located(FAR_PLACE, post.time), None)
 
     tags = read_tags(path, "-a", "-G1", "-EXIF:all", "-XMP:all", "-FileModifyDate")
     assert tags["ExifIFD:DateTimeOriginal"] == "2026:05:01 15:30:00"
@@ -917,7 +924,7 @@ def test_comment_keeps_line_breaks_quotes_and_backslashes(tmp_path):
     shutil.copy(FIXTURES / "pixel.jpg", path)
     body = 'Line "one" \\ back\nLine two 💚 $HOME -x=1'
     post = parse(item(contents={"body": body, "attachments": []}))
-    dojo_archive.write_metadata(path, post, Located(None, post.time), None)
+    dojo_archive.write_metadata(EXIFTOOL, path, post, Located(None, post.time), None)
     assert read_tags(path, "-EXIF:UserComment")["UserComment"] == body
 
 
@@ -929,7 +936,7 @@ def test_people_become_keywords(tmp_path):
         {"type": "class", "firstName": "x", "lastName": "y"},
     ]
     post = parse(item(tags=tags))
-    dojo_archive.write_metadata(path, post, Located(None, post.time), None)
+    dojo_archive.write_metadata(EXIFTOOL, path, post, Located(None, post.time), None)
     assert read_tags(path, "-XMP-dc:Subject")["Subject"] == ["ClassDojo", "Otters", "Sample Child"]
 
 
@@ -1000,7 +1007,7 @@ def test_file_name_with_non_english_characters_can_be_tagged(tmp_path):
     path = tmp_path / "2026-05-01_Écureuils_日本語.jpg"
     shutil.copy(FIXTURES / "pixel.jpg", path)
     post = parse(item())
-    dojo_archive.write_metadata(path, post, Located(None, post.time), None)
+    dojo_archive.write_metadata(EXIFTOOL, path, post, Located(None, post.time), None)
     assert read_tags(path, "-EXIF:UserComment")["UserComment"] == post.body
 
 
@@ -1018,7 +1025,7 @@ def test_exiftool_reads_the_whole_body_with_unix_line_ends(tmp_path, monkeypatch
 
     monkeypatch.setattr(dojo_archive.subprocess, "run", spy)
     post = parse(item(contents={"body": "One\nTwo", "attachments": []}))
-    dojo_archive.write_metadata(path, post, Located(None, post.time), None)
+    dojo_archive.write_metadata(EXIFTOOL, path, post, Located(None, post.time), None)
     assert seen == [b"One\nTwo"]
 
 
@@ -1026,9 +1033,9 @@ def test_write_metadata_keeps_a_given_capture_date_and_clears_tags_the_post_lack
     path = tmp_path / "pixel.jpg"
     shutil.copy(FIXTURES / "pixel.jpg", path)
     post = parse(item())
-    dojo_archive.write_metadata(path, post, Located(FAR_PLACE, post.time), None)
+    dojo_archive.write_metadata(EXIFTOOL, path, post, Located(FAR_PLACE, post.time), None)
     captured = datetime.fromisoformat("2020-01-02T03:04:05")
-    dojo_archive.write_metadata(path, post, Located(None, post.time), captured)
+    dojo_archive.write_metadata(EXIFTOOL, path, post, Located(None, post.time), captured)
 
     tags = read_tags(path, "-EXIF:DateTimeOriginal", "-FileModifyDate", "-GPS:all", "-Location")
     assert tags["DateTimeOriginal"] == f"{post.time:%Y:%m:%d %H:%M:%S}"
@@ -1068,31 +1075,211 @@ def test_a_pdf_saves_untagged_with_the_post_date(archive):
     assert saved.stat().st_mtime == datetime.fromisoformat(item()["time"]).timestamp()
 
 
-def test_no_exiftool_saves_files_with_names_and_dates_and_says_how_to_install(
-    archive, no_exiftool, capsys, monkeypatch
-):
-    monkeypatch.setattr(dojo_archive.sys, "platform", "win32")
+def test_no_exiftool_saves_files_with_names_and_dates(archive, no_exiftool):
     network = Network([item()])
     assert archive(network, "--no-gps") == 0
     no_exiftool(True)
     path = saved_file(archive.folder)
     assert path.read_bytes() == JPEG
     assert path.stat().st_mtime == datetime.fromisoformat(item()["time"]).timestamp()
-    output = capsys.readouterr().out
-    assert output.count("winget install OliverBetz.ExifTool") == 1
     assert "DateTimeOriginal" not in read_tags(path, "-EXIF:DateTimeOriginal")
 
 
-@pytest.mark.parametrize(
-    ("platform", "command"),
-    [("darwin", "brew install"), ("linux", "apt install"), ("win32", "winget install")],
+class ReleaseServer:
+    """Stand in for the GitHub release that holds ExifTool, and count each request."""
+
+    def __init__(self):
+        self.files = {}
+        self.requests = []
+        files, requests_seen = self.files, self.requests
+
+        class Handler(http.server.BaseHTTPRequestHandler):
+            def do_GET(self):
+                requests_seen.append(self.path)
+                body = files.get(self.path.rsplit("/", 1)[-1])
+                self.send_response(200 if body is not None else 404)
+                self.end_headers()
+                self.wfile.write(body or b"")
+
+            def log_message(self, *_):
+                pass
+
+        self.server = http.server.ThreadingHTTPServer(("127.0.0.1", 0), Handler)
+        threading.Thread(target=self.server.serve_forever, daemon=True).start()
+        self.url = f"http://127.0.0.1:{self.server.server_port}/exiftool"
+
+    def offer(self, monkeypatch, build_name, data, checksum=None):
+        build = getattr(dojo_archive, build_name)
+        self.files[build.archive] = data
+        sha256 = checksum or hashlib.sha256(data).hexdigest()
+        monkeypatch.setattr(dojo_archive, build_name, replace(build, sha256=sha256))
+
+
+@pytest.fixture
+def release(monkeypatch, home):
+    server = ReleaseServer()
+    monkeypatch.setattr(dojo_archive, "EXIFTOOL_RELEASE", server.url)
+    yield server
+    server.server.shutdown()
+    server.server.server_close()
+
+
+def tar_gz(files):
+    buffer = io.BytesIO()
+    with tarfile.open(fileobj=buffer, mode="w:gz") as archive:
+        for name, data in files.items():
+            info = tarfile.TarInfo(name)
+            info.size = len(data)
+            archive.addfile(info, io.BytesIO(data))
+    return buffer.getvalue()
+
+
+def zip_of(files):
+    buffer = io.BytesIO()
+    with zipfile.ZipFile(buffer, "w") as archive:
+        for name, data in files.items():
+            archive.writestr(name, data)
+    return buffer.getvalue()
+
+
+PERL_PROGRAM = b"#!/usr/bin/perl\n"
+PERL_TAR = tar_gz(
+    {
+        "Image-ExifTool-13.61/exiftool": PERL_PROGRAM,
+        "Image-ExifTool-13.61/lib/Image/ExifTool.pm": b"1;\n",
+    }
 )
-def test_install_line_fits_the_operating_system(
-    archive, no_exiftool, capsys, monkeypatch, platform, command
+WINDOWS_PROGRAM = b"MZ program"
+WINDOWS_ZIP = zip_of(
+    {
+        "exiftool-13.61_64/exiftool(-k).exe": WINDOWS_PROGRAM,
+        "exiftool-13.61_64/exiftool_files/perl.dll": b"MZ library",
+    }
+)
+
+
+@pytest.fixture
+def unix_with_perl(monkeypatch):
+    """Only Perl is on PATH, so the tool must use its own copy of ExifTool."""
+    monkeypatch.setattr(dojo_archive.sys, "platform", "linux")
+    monkeypatch.setattr(
+        dojo_archive.shutil, "which", lambda name: "/usr/bin/perl" if name == "perl" else None
+    )
+
+
+def managed(home):
+    return home / ".dojo-archive" / "exiftool-13.61"
+
+
+def find_exiftool():
+    return dojo_archive.find_exiftool(dojo_archive.new_session())
+
+
+def test_exiftool_on_path_is_used_with_no_download(release, monkeypatch):
+    monkeypatch.setattr(dojo_archive.shutil, "which", lambda name: f"/bin/{name}")
+    assert find_exiftool() == ["/bin/exiftool"]
+    assert release.requests == []
+
+
+def test_a_good_download_is_unpacked_once_and_reused(
+    release, unix_with_perl, home, monkeypatch, capsys
 ):
-    monkeypatch.setattr(dojo_archive.sys, "platform", platform)
-    assert archive(Network(), "--no-gps") == 0
-    assert command in capsys.readouterr().out
+    release.offer(monkeypatch, "EXIFTOOL_PERL", PERL_TAR)
+    program = managed(home) / "Image-ExifTool-13.61" / "exiftool"
+    for _ in range(2):
+        assert find_exiftool() == ["/usr/bin/perl", str(program)]
+    assert program.read_bytes() == PERL_PROGRAM
+    assert len(release.requests) == 1
+    assert capsys.readouterr().out == ""
+
+
+def test_a_bad_checksum_is_refused_and_a_later_run_tries_again(
+    release, unix_with_perl, home, monkeypatch, capsys
+):
+    release.offer(monkeypatch, "EXIFTOOL_PERL", PERL_TAR, checksum="0" * 64)
+    assert find_exiftool() is None
+    assert capsys.readouterr().out.count("\n") == 1
+    assert list(home.rglob("*")) == []
+
+    release.offer(monkeypatch, "EXIFTOOL_PERL", PERL_TAR)
+    assert find_exiftool() is not None
+    assert len(release.requests) == 2
+
+
+def test_a_failed_download_leaves_the_run_untagged_with_one_plain_line(
+    release, unix_with_perl, home, capsys
+):
+    assert find_exiftool() is None
+    output = capsys.readouterr().out
+    assert output.count("\n") == 1
+    assert "ExifTool" not in output
+    assert not managed(home).exists()
+
+
+def test_a_kill_during_unpack_leaves_no_copy_and_the_next_run_unpacks_again(
+    release, unix_with_perl, home, monkeypatch
+):
+    release.offer(monkeypatch, "EXIFTOOL_PERL", PERL_TAR)
+    real_extractall = tarfile.TarFile.extractall
+
+    def killed(self, path, **_):
+        self.extract(self.getmembers()[0], path, filter="data")
+        raise KeyboardInterrupt
+
+    monkeypatch.setattr(tarfile.TarFile, "extractall", killed)
+    with pytest.raises(KeyboardInterrupt):
+        find_exiftool()
+    assert not managed(home).exists()
+
+    monkeypatch.setattr(tarfile.TarFile, "extractall", real_extractall)
+    program = managed(home) / "Image-ExifTool-13.61" / "exiftool"
+    assert find_exiftool() == ["/usr/bin/perl", str(program)]
+    assert [path.name for path in managed(home).parent.iterdir()] == [managed(home).name]
+
+
+def test_no_perl_means_no_download_and_one_plain_line(release, monkeypatch, capsys):
+    monkeypatch.setattr(dojo_archive.sys, "platform", "darwin")
+    monkeypatch.setattr(dojo_archive.shutil, "which", lambda _: None)
+    assert find_exiftool() is None
+    output = capsys.readouterr().out
+    assert output.count("\n") == 1
+    assert "ExifTool" not in output
+    assert release.requests == []
+
+
+def test_windows_copy_gets_a_name_that_waits_for_no_key_press(release, home, monkeypatch):
+    monkeypatch.setattr(dojo_archive.sys, "platform", "win32")
+    monkeypatch.setattr(dojo_archive.shutil, "which", lambda _: None)
+    release.offer(monkeypatch, "EXIFTOOL_WINDOWS", WINDOWS_ZIP)
+    folder = managed(home) / "exiftool-13.61_64"
+    assert find_exiftool() == [str(folder / "exiftool.exe")]
+    assert (folder / "exiftool.exe").read_bytes() == WINDOWS_PROGRAM
+    assert not (folder / "exiftool(-k).exe").exists()
+    assert (folder / "exiftool_files" / "perl.dll").exists()
+
+
+@pytest.mark.skipif(
+    not os.environ.get("DOJO_ARCHIVE_REAL_EXIFTOOL"),
+    reason="downloads ExifTool from GitHub; set DOJO_ARCHIVE_REAL_EXIFTOOL=1",
+)
+def test_the_real_download_tags_a_photo(home, tmp_path, monkeypatch):
+    real_which = shutil.which
+    monkeypatch.setattr(
+        dojo_archive.shutil, "which", lambda name: None if name == "exiftool" else real_which(name)
+    )
+    command = find_exiftool()
+    assert command is not None
+    assert command[-1].startswith(str(home))
+    path = tmp_path / "pixel.jpg"
+    shutil.copy(FIXTURES / "pixel.jpg", path)
+    post = parse(item())
+    dojo_archive.write_metadata(command, path, post, Located(FAR_PLACE, post.time), None)
+    output = dojo_archive.run_exiftool(
+        command, "-json", "-n", "-XMP-dc:Description", "-GPS:GPSLatitude", arguments=f"{path}\n"
+    )
+    tags = json.loads(output)[0]
+    assert tags["Description"] == post.body
+    assert tags["GPSLatitude"] == pytest.approx(33.9)
 
 
 BROKEN_JPEG = b"\xff\xd8\xff but no real image"
@@ -1334,10 +1521,10 @@ def test_a_re_tag_failure_leaves_the_file_unchanged_and_a_later_run_retries(
     before, modified = path.read_bytes(), path.stat().st_mtime
     real_exiftool = dojo_archive.run_exiftool
 
-    def refuse_to_write(*options, arguments):
+    def refuse_to_write(command, *options, arguments):
         if "-overwrite_original" in options:
             raise subprocess.CalledProcessError(1, "exiftool")
-        return real_exiftool(*options, arguments=arguments)
+        return real_exiftool(command, *options, arguments=arguments)
 
     monkeypatch.setattr(dojo_archive, "run_exiftool", refuse_to_write)
     network.feed = [text_item("We had fun yesterday.")]
@@ -2219,7 +2406,7 @@ def tagged_copy(tmp_path, name):
         shutil.copy(FIXTURES / name, path)
     post = parse(item(headerSubtext=PLACE_NAME))
     place = Place(PLACE_NAME, (51.5, -0.1))
-    dojo_archive.write_metadata(path, post, Located(place, post.time), None)
+    dojo_archive.write_metadata(EXIFTOOL, path, post, Located(place, post.time), None)
     assert PLACE_NAME in json.dumps(all_tags(path))
     return path
 
@@ -2294,7 +2481,7 @@ def test_school_post_lists_its_group_and_place_as_one_keyword(tmp_path):
     path = tmp_path / "pixel.jpg"
     shutil.copy(FIXTURES / "pixel.jpg", path)
     post = parse(item(headerSubtext=SCHOOL.name, tags=[{"type": "student", "firstName": "Sample"}]))
-    dojo_archive.write_metadata(path, post, Located(Place(SCHOOL.name), post.time), None)
+    dojo_archive.write_metadata(EXIFTOOL, path, post, Located(Place(SCHOOL.name), post.time), None)
     assert read_tags(path, "-XMP-dc:Subject")["Subject"] == ["ClassDojo", SCHOOL.name, "Sample"]
 
 

@@ -5,6 +5,7 @@ import argparse
 import contextlib
 import hashlib
 import html
+import io
 import itertools
 import json
 import os
@@ -12,8 +13,10 @@ import re
 import shutil
 import subprocess
 import sys
+import tarfile
 import tempfile
 import time
+import zipfile
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
 from concurrent.futures import Future, ThreadPoolExecutor, as_completed
@@ -69,11 +72,12 @@ WORKERS = 5
 PROGRESS_EVERY = 100
 GROUP_IN_NAME = 60
 EXTRA_COUNTS = ("missing", "not tagged", "waiting for ExifTool")
-EXIFTOOL_INSTALL = {
-    "darwin": "brew install exiftool",
-    "win32": "winget install OliverBetz.ExifTool",
-}
-EXIFTOOL_INSTALL_DEFAULT = "sudo apt install libimage-exiftool-perl"
+EXIFTOOL_RELEASE = "https://github.com/deanhtid/dojo-archive/releases/download/exiftool-13.61"
+NO_PERL = "This computer has no Perl, so files get names and dates but no tags."
+NO_TAGGER = (
+    "Could not download the part that tags photos, so files get names and dates only. "
+    "The next run tries again."
+)
 # Each tagging clears these first, so a value that a post no longer gives cannot stay.
 OWNED_TAGS = (
     "XMP-dc:Subject",
@@ -182,6 +186,30 @@ class BadDownload(Exception):
 
 
 Coords = tuple[float, float]
+
+
+@dataclass(frozen=True)
+class ExifToolBuild:
+    """A copy of ExifTool that the tool downloads when the computer has none.
+
+    `program` is its path inside the unpacked archive.
+    """
+
+    archive: str
+    sha256: str
+    program: str
+
+
+EXIFTOOL_PERL = ExifToolBuild(
+    "Image-ExifTool-13.61.tar.gz",
+    "df7f42c14b4f58a60bec39feae0ee9593000ee27e44920d2b0a21c6627de0baa",
+    "Image-ExifTool-13.61/exiftool",
+)
+EXIFTOOL_WINDOWS = ExifToolBuild(
+    "exiftool-13.61_64.zip",
+    "ab75b37515385a753aa60a58f68ffffe1ff81e43b319df9540978fb19e0580e5",
+    "exiftool-13.61_64/exiftool.exe",
+)
 
 
 @dataclass(frozen=True)
@@ -777,9 +805,61 @@ def event_time(post: Post) -> datetime:
     return post.time
 
 
-def run_exiftool(*options: str, arguments: str) -> str:
+def exiftool_folder() -> Path:
+    return Path.home() / ".dojo-archive" / "exiftool-13.61"
+
+
+def install_exiftool(session: requests.Session, build: ExifToolBuild, folder: Path) -> None:
+    """Unpack into a `.partial` folder and rename it, so a kill never leaves half a copy."""
+    response = session.get(f"{EXIFTOOL_RELEASE}/{build.archive}", timeout=TIMEOUT)
+    response.raise_for_status()
+    data = response.content
+    if hashlib.sha256(data).hexdigest() != build.sha256:
+        raise BadDownload
+    partial = folder.with_name(f"{folder.name}.partial")
+    shutil.rmtree(partial, ignore_errors=True)
+    if build.archive.endswith(".zip"):
+        with zipfile.ZipFile(io.BytesIO(data)) as archive:
+            archive.extractall(partial)  # noqa: S202 - the checksum fixed its contents
+        # The "(-k)" in the name makes ExifTool wait for a key press after each run.
+        program = partial / build.program
+        program.with_name("exiftool(-k).exe").rename(program)
+    else:
+        with tarfile.open(fileobj=io.BytesIO(data)) as archive:
+            archive.extractall(partial, filter="data")
+    partial.rename(folder)
+
+
+def find_exiftool(session: requests.Session) -> list[str] | None:
+    """Return the command that runs ExifTool: the one on PATH, or else the tool's own copy."""
+    if found := shutil.which("exiftool"):
+        return [found]
+    if sys.platform == "win32":
+        build, runner = EXIFTOOL_WINDOWS, []
+    elif perl := shutil.which("perl"):
+        build, runner = EXIFTOOL_PERL, [perl]
+    else:
+        print(NO_PERL)
+        return None
+    folder = exiftool_folder()
+    if not folder.is_dir():
+        try:
+            install_exiftool(session, build, folder)
+        except (
+            requests.RequestException,
+            BadDownload,
+            OSError,
+            tarfile.TarError,
+            zipfile.BadZipFile,
+        ):
+            print(NO_TAGGER)
+            return None
+    return [*runner, str(folder / build.program)]
+
+
+def run_exiftool(exiftool: Sequence[str], *options: str, arguments: str) -> str:
     """Send arguments as UTF-8 on stdin, because a Windows command line can garble some names."""
-    command = [shutil.which("exiftool") or "exiftool", "-charset", "filename=UTF8", *options]
+    command = [*exiftool, "-charset", "filename=UTF8", *options]
     return subprocess.run(
         [*command, "-@", "-"],
         input=arguments,
@@ -804,9 +884,12 @@ def is_own_date(found: datetime, post: Post) -> bool:
     )
 
 
-def read_capture_time(path: Path, post: Post, clean: bool) -> datetime | None:
+def read_capture_time(
+    exiftool: Sequence[str], path: Path, post: Post, clean: bool
+) -> datetime | None:
     """A clean file's date is its own. A saved file with no entry may hold the tool's date."""
     output = run_exiftool(
+        exiftool,
         "-json",
         "-api",
         "QuickTimeUTC",
@@ -875,7 +958,9 @@ def metadata_args(
     return args
 
 
-def write_metadata(path: Path, post: Post, located: Located, captured: datetime | None) -> None:
+def write_metadata(
+    exiftool: Sequence[str], path: Path, post: Post, located: Located, captured: datetime | None
+) -> None:
     """Keep the file's own capture date, because the post date is only a later bound."""
     # ExifTool takes a value from a file literally. Its C-string argument lines use Perl eval.
     # Windows cannot open a temporary file for a second program until the first handle closes.
@@ -894,6 +979,7 @@ def write_metadata(path: Path, post: Post, located: Located, captured: datetime 
         )
         args.append(f"-FileModifyDate={(captured or located.time).strftime(EXIF_DATE + '%z')}")
         run_exiftool(
+            exiftool,
             "-q",
             "-overwrite_original",
             "-charset",
@@ -996,15 +1082,17 @@ class Ready:
     entry: Entry
 
 
-def finish(partial: Path, job: Job, tagging: bool) -> Entry:
+def finish(partial: Path, job: Job, exiftool: Sequence[str] | None) -> Entry:
     wanted = fingerprint(job.post, job.located)
     taggable = partial.suffix in TAGGABLE_SUFFIXES
-    if tagging and taggable:
+    if exiftool and taggable:
         known = job.entry if job.entry and job.entry.tagged else None
         try:
             clean = not job.copies or (job.entry is not None and not job.entry.tagged)
-            captured = known.captured if known else read_capture_time(partial, job.post, clean)
-            write_metadata(partial, job.post, job.located, captured)
+            captured = (
+                known.captured if known else read_capture_time(exiftool, partial, job.post, clean)
+            )
+            write_metadata(exiftool, partial, job.post, job.located, captured)
             return Entry(wanted, captured)
         except (subprocess.CalledProcessError, OSError, *READ_ERRORS):
             pass
@@ -1024,7 +1112,7 @@ def open_link(session: requests.Session, links: Sequence[str]) -> tuple[requests
     return session.get(last, stream=True, timeout=TIMEOUT), last
 
 
-def download(session: requests.Session, job: Job, tagging: bool) -> Ready:
+def download(session: requests.Session, job: Job, exiftool: Sequence[str] | None) -> Ready:
     attachment = job.attachment
     partial = job.stem.with_name(f".partial-{job.stem.name}")
     response, link = open_link(session, attachment.links)
@@ -1040,7 +1128,7 @@ def download(session: requests.Session, job: Job, tagging: bool) -> Ready:
             check_download(head, attachment.kind, link_suffix(link), content_type)
             suffix = saved_suffix(head, content_type, link)
             partial = partial.replace(partial.with_name(f"{partial.name}{suffix}"))
-            entry = finish(partial, job, tagging)
+            entry = finish(partial, job, exiftool)
         except BaseException:
             partial.unlink(missing_ok=True)
             raise
@@ -1053,7 +1141,7 @@ def changed_at(path: Path) -> float:
     return info.st_birthtime if sys.platform == "win32" else info.st_ctime
 
 
-def retag(job: Job, tagging: bool) -> Ready:
+def retag(job: Job, exiftool: Sequence[str] | None) -> Ready:
     """Tag a `.partial-` copy, so a kill or a failure leaves the saved file as it was.
 
     A kill can leave 2 copies. Keep the one at the wanted name, or else the newest. The file
@@ -1065,7 +1153,7 @@ def retag(job: Job, tagging: bool) -> Ready:
     partial = final.with_name(f".partial-{final.name}")
     try:
         shutil.copy2(source, partial)
-        return Ready(partial, final, finish(partial, job, tagging))
+        return Ready(partial, final, finish(partial, job, exiftool))
     except BaseException:
         partial.unlink(missing_ok=True)
         raise
@@ -1294,7 +1382,9 @@ def newest_owners(jobs: list[tuple[Post, Located]]) -> dict[str, str]:
     return owners
 
 
-def save_all(jobs: list[tuple[Post, Located]], output: Path, tagging: bool) -> Counter[str]:
+def save_all(
+    jobs: list[tuple[Post, Located]], output: Path, exiftool: Sequence[str] | None
+) -> Counter[str]:
     """Save notes, new files and changed tags. A kill loses only the files in progress."""
     manifest = Manifest(output / MANIFEST_NAME)
     existing = index_saved(output)
@@ -1331,7 +1421,7 @@ def save_all(jobs: list[tuple[Post, Located]], output: Path, tagging: bool) -> C
             counts["not tagged"] += 1
         else:
             install(job, ready, ready.entry)
-            counts["not tagged" if tagging and not ready.entry.tagged else "saved"] += 1
+            counts["not tagged" if exiftool and not ready.entry.tagged else "saved"] += 1
 
     with ThreadPoolExecutor(max_workers=WORKERS) as executor:
         try:
@@ -1348,17 +1438,17 @@ def save_all(jobs: list[tuple[Post, Located]], output: Path, tagging: bool) -> C
                     job = Job(post, attachment, located, stem, copies, entry)
                     wanted = fingerprint(post, located)
                     current = (
-                        entry and entry.fingerprint == wanted and (entry.tagged or not tagging)
+                        entry and entry.fingerprint == wanted and (entry.tagged or not exiftool)
                     )
                     taggable = any(copy.suffix in TAGGABLE_SUFFIXES for copy in copies)
                     if current and len(copies) == 1:
                         counts["skipped"] += 1
-                    elif taggable and not tagging:
+                    elif taggable and not exiftool:
                         counts["waiting for ExifTool"] += 1
                     elif copies:
-                        futures[executor.submit(retag, job, tagging)] = job
+                        futures[executor.submit(retag, job, exiftool)] = job
                     else:
-                        futures[executor.submit(download, downloader, job, tagging)] = job
+                        futures[executor.submit(download, downloader, job, exiftool)] = job
             total = len(futures)
             for done, future in enumerate(as_completed(list(futures)), start=1):
                 settle(future, futures.pop(future))
@@ -1401,10 +1491,7 @@ def run(session: requests.Session, account: Account, output: Path, args: argpars
     if unreadable:
         print(f"Could not read {unreadable} feed items. They stay in {FEED_NAME}.")
 
-    tagging = shutil.which("exiftool") is not None
-    if not tagging:
-        command = EXIFTOOL_INSTALL.get(sys.platform, EXIFTOOL_INSTALL_DEFAULT)
-        print(f"ExifTool is missing, so files get names and file dates only. Install: {command}")
+    exiftool = find_exiftool(new_session())
 
     for pattern in (".partial-*", f"{YEAR_FOLDER}/.partial-*"):
         for partial in output.glob(pattern):
@@ -1417,7 +1504,7 @@ def run(session: requests.Session, account: Account, output: Path, args: argpars
     located = {post.id: Located(places.place_of(post), event_time(post)) for post in posts}
     jobs = [(post, located[post.id]) for post in chosen]
 
-    counts = save_all(jobs, output, tagging)
+    counts = save_all(jobs, output, exiftool)
     write_gallery(output, [(post, located[post.id]) for post in posts])
     print(summary(counts))
     print(f"Your archive: {(output / GALLERY_NAME).as_uri()}")
