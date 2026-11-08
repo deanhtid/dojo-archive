@@ -40,3 +40,48 @@ jobs:
       - name: Check archive durability
         if: runner.os == 'Linux'
         run: uv run python .agents/skills/verify-archive-durability/check.py
+
+  installer:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    env:
+      DOJO_ARCHIVE_NO_RUN: "1"
+      DOJO_ARCHIVE_SOURCE: ${{ github.workspace }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - name: Read the expected version
+        run: echo "EXPECTED=dojo-archive $(sed -n 's/^version = "\(.*\)"/\1/p' pyproject.toml)" >> "$GITHUB_ENV"
+      - name: Run the installer on macOS and Linux
+        if: runner.os != 'Windows'
+        run: sh install.sh
+      - name: Run the macOS launcher's command
+        if: runner.os == 'macOS'
+        run: test "$(sh "$HOME/Desktop/ClassDojo Photos.command" --version)" = "$EXPECTED"
+      - name: Run the Linux launcher's command
+        if: runner.os == 'Linux'
+        run: |
+          desktop=$(xdg-user-dir DESKTOP 2>/dev/null || true)
+          exec_line=$(sed -n 's/^Exec=//p' "${desktop:-$HOME/Desktop}/ClassDojo Photos.desktop")
+          test "$(eval "$exec_line --version")" = "$EXPECTED"
+      - name: Run the installer on Windows
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: Get-Content -Raw install.ps1 | Invoke-Expression
+      - name: Run the Windows launcher's command
+        if: runner.os == 'Windows'
+        shell: powershell
+        run: |
+          $launcher = Join-Path ([Environment]::GetFolderPath('Desktop')) 'ClassDojo Photos.bat'
+          $printed = & $launcher --version
+          if ($printed -ne $env:EXPECTED) { throw "The launcher printed: $printed" }
+      - uses: astral-sh/setup-uv@v6
+      - name: Download ExifTool and tag a photo with it
+        env:
+          DOJO_ARCHIVE_REAL_EXIFTOOL: "1"
+        run: uv run pytest -k test_the_real_download_tags_a_photo
