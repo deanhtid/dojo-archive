@@ -3116,3 +3116,20 @@ def test_a_real_capture_date_near_the_post_time_survives_first_tagging(
     tags = read_tags(saved_file(archive.folder), "-DateTimeOriginal")
     assert tags["DateTimeOriginal"] == original
     assert len(network.downloads) == 1
+
+
+def test_the_page_still_links_a_saved_photo_that_the_rule_now_refuses(archive, no_exiftool):
+    flyer_post = item(targetType="school", headerSubtext="Example Primary School")
+    flyer_post["contents"]["attachments"][0]["metadata"] = {"filename": "Sports day.jpg"}
+    network = Network([flyer_post])
+    folder = archive.folder / "2026"
+    folder.mkdir(parents=True)
+    saved = (
+        folder
+        / f"2026-05-01_Example_Primary_School_{flyer_post['contents']['attachments'][0]['_id']}.jpg"
+    )
+    saved.write_bytes(JPEG)
+    assert archive(network) == 0
+    page = (archive.folder / "index.html").read_text()
+    assert saved.name in page
+    assert network.downloads == []

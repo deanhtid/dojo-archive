@@ -294,6 +294,8 @@ class Post:
     school: School | None
     attachments: tuple[Attachment, ...]
     school_wide: bool
+    # Every attachment ID, wanted or not, so the page still links a file an older version saved.
+    all_ids: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True)
@@ -448,7 +450,11 @@ def parse_post(item: dict[str, Any], account: Account) -> Post:
         attachments=parse_attachments(contents),
         school_wide=item.get("targetType") == "school",
     )
-    return replace(post, attachments=tuple(a for a in post.attachments if wanted(post, a)))
+    return replace(
+        post,
+        attachments=tuple(a for a in post.attachments if wanted(post, a)),
+        all_ids=tuple(a.id for a in post.attachments),
+    )
 
 
 def read_posts(items: list[Any], account: Account) -> tuple[list[Post], int]:
@@ -1188,11 +1194,7 @@ def write_gallery(output: Path, jobs: list[tuple[Post, Located]]) -> None:
     files = index_saved(output)
     articles = []
     for post, located in sorted(jobs, key=lambda job: job[1].time.timestamp(), reverse=True):
-        media = "".join(
-            media_html(files[attachment.id][0], output)
-            for attachment in post.attachments
-            if attachment.id in files
-        )
+        media = "".join(media_html(files[key][0], output) for key in post.all_ids if key in files)
         if not media:
             continue
         place = located.place.name if located.place else ""

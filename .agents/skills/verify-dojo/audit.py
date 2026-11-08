@@ -104,9 +104,10 @@ def main_audit(output: Path, evidence: Path, since: date | None) -> int:
             else:
                 counts["untagged files"] += 1
 
+    # The tool keeps files that an older version or a removed post left, so they are counted, not
+    # failed. The durability check proves that a run never downloads an unwanted file.
     wanted = {attachment.id for post in posts for attachment in post.attachments}
-    for key in files.keys() - wanted:
-        failures.append({"id": key, "problem": "a file that the tool does not want"})
+    counts["files kept from before"] = len(files.keys() - wanted)
 
     partial = [path.name for path in output.glob("*/.partial-*")]
     report = {
