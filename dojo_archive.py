@@ -62,7 +62,6 @@ MANIFEST_NAME = ".manifest.json"
 PLACES_NAME = ".places.json"
 FEED_NAME = "feed.json"
 GALLERY_NAME = "index.html"
-NOTE_SUFFIX = ".post.txt"
 YEAR_FOLDER = "[0-9]" * 4
 NOTICE = "Unofficial, not made by or linked to ClassDojo."
 GPS_QUESTION = (
@@ -488,23 +487,17 @@ def feed_coordinates(items: list[Any]) -> dict[str, Coords]:
     return found
 
 
-def atomic_write(
-    path: Path, text: str, *, mode: int = 0o644, timestamp: float | None = None
-) -> None:
+def atomic_write(path: Path, text: str, *, mode: int = 0o644) -> None:
     """A kill during a write must leave the old file, because a later run has to read it."""
     partial = path.with_name(f".partial-{path.name}")
     partial.unlink(missing_ok=True)
     partial.touch(mode=mode)
     partial.write_text(text, encoding="utf-8")
-    if timestamp is not None:
-        os.utime(partial, (timestamp, timestamp))
     partial.replace(path)
 
 
 def saved_key(path: Path) -> str:
-    """Notes and files use separate keys, because a post and a file can share an ID."""
-    if path.name.endswith(NOTE_SUFFIX):
-        return f"note-{path.name.removesuffix(NOTE_SUFFIX).rsplit('_', 1)[-1]}"
+    """A note from an older version ends in `.post.txt`, so its key never matches an ID."""
     return path.stem.rsplit("_", 1)[-1]
 
 
@@ -1181,19 +1174,6 @@ def retag(job: Job, exiftool: Sequence[str] | None) -> Ready:
         raise
 
 
-def save_note(post: Post, located: Located, folder: Path, old_copies: Sequence[Path] = ()) -> None:
-    path = folder / f"{stem_for(post, located, post.id)}{NOTE_SUFFIX}"
-    place = located.place.name if located.place else "unknown"
-    atomic_write(
-        path,
-        f"Date: {located.time:%Y-%m-%d} (posted {post.time:%Y-%m-%d %H:%M})\n"
-        f"From: {post.sender}\nGroup: {post.group}\nPlace: {place}\n"
-        f"Tagged: {', '.join(post.people) or 'nobody'}\n\n{post.body}\n",
-        timestamp=located.time.timestamp(),
-    )
-    delete_others(old_copies, path)
-
-
 def media_html(path: Path, output: Path) -> str:
     link = html.escape(quote(path.relative_to(output).as_posix()), quote=True)
     if path.suffix in PLAYER_SUFFIXES:
@@ -1407,7 +1387,7 @@ def newest_owners(jobs: list[tuple[Post, Located]]) -> dict[str, str]:
 def save_all(
     jobs: list[tuple[Post, Located]], output: Path, exiftool: Sequence[str] | None
 ) -> Counter[str]:
-    """Save notes, new files and changed tags. A kill loses only the files in progress."""
+    """Save new files and changed tags. A kill loses only the files in progress."""
     manifest = Manifest(output / MANIFEST_NAME)
     existing = index_saved(output)
     owners = newest_owners(jobs)
@@ -1449,11 +1429,10 @@ def save_all(
         try:
             for post, located in jobs:
                 folder = output / f"{located.time:%Y}"
-                folder.mkdir(exist_ok=True)
-                save_note(post, located, folder, existing.get(f"note-{post.id}", ()))
                 for attachment in post.attachments:
                     if owners[attachment.id] != post.id:
                         continue
+                    folder.mkdir(exist_ok=True)
                     copies = existing.get(attachment.id, ())
                     entry = manifest.entries.get(attachment.id) if copies else None
                     stem = folder / stem_for(post, located, attachment.id)

@@ -80,8 +80,8 @@ CLASS_POST = post("1", "Sewing", [attachment("1"), attachment("2"), LETTER, GRAP
 SCHOOL_FILES = [attachment("3", name="IMG_0003.jpg"), FLYER]
 SCHOOL_POST = post("2", "Book fair", SCHOOL_FILES, target="school")
 EDITED_SCHOOL_POST = post("2", "Book fair raised money", SCHOOL_FILES, target="school")
-NOTE_POST = post("3", "No files here", [], target="school")
-FIRST_FEED = [CLASS_POST, SCHOOL_POST, NOTE_POST]
+TEXT_POST = post("3", "No files here", [], target="school")
+FIRST_FEED = [CLASS_POST, SCHOOL_POST, TEXT_POST]
 MOVED_POST = post("1", "On Monday we had sewing", [attachment("1"), attachment("2"), LETTER])
 NEW_POST = post("4", "Hockey", [attachment("4")], day=7)
 PLACEHOLDER = {
@@ -91,11 +91,7 @@ PLACEHOLDER = {
 LESS_POST = post("1", "", [PLACEHOLDER, attachment("2")])
 CASE_POST = {**CLASS_POST, "headerSubtext": CLASS_POST["headerSubtext"].upper()}
 FILES_POST = post("5", "Reading list", [attachment("5"), attachment("6")])
-MOVED_FEED = [MOVED_POST, SCHOOL_POST, NOTE_POST]
-ALL_BODIES = {
-    item["contents"]["body"]
-    for item in [*FIRST_FEED, MOVED_POST, NEW_POST, FILES_POST, EDITED_SCHOOL_POST]
-}
+MOVED_FEED = [MOVED_POST, SCHOOL_POST, TEXT_POST]
 
 
 @dataclass(frozen=True)
@@ -133,7 +129,7 @@ SCENARIOS = (
     Scenario(
         "a later reply has a placeholder and blanked text",
         FIRST_FEED,
-        [LESS_POST, SCHOOL_POST, NOTE_POST],
+        [LESS_POST, SCHOOL_POST, TEXT_POST],
     ),
     Scenario(
         "a new download answers 200 with an error page",
@@ -150,7 +146,7 @@ SCENARIOS = (
     Scenario(
         "a class name changes only in case",
         FIRST_FEED,
-        [CASE_POST, SCHOOL_POST, NOTE_POST],
+        [CASE_POST, SCHOOL_POST, TEXT_POST],
     ),
     Scenario(
         "locations go off and every saved link is dead",
@@ -162,7 +158,7 @@ SCENARIOS = (
     Scenario(
         "every link is dead and posts change",
         FIRST_FEED,
-        [MOVED_POST, EDITED_SCHOOL_POST, NOTE_POST],
+        [MOVED_POST, EDITED_SCHOOL_POST, TEXT_POST],
         dead=frozenset({"1", "2", "3"}),
     ),
 )
@@ -333,9 +329,6 @@ def key_of(name: str) -> str:
 def is_complete(name: str, data: bytes) -> bool:
     if name.endswith(".jpg"):
         return data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")
-    if name.endswith(dojo_archive.NOTE_SUFFIX):
-        text = data.decode("utf-8", "replace")
-        return text.startswith("Date:") and any(text.endswith(f"{b}\n") for b in ALL_BODIES)
     return True
 
 
@@ -347,12 +340,10 @@ def saved_files(tree: dict[str, bytes]) -> dict[str, list[str]]:
     return keys
 
 
-def post_keys(feed: list[dict]) -> set[str]:
-    """Every note and every file that the tool wants, by the tool's own rule."""
+def wanted_keys(feed: list[dict]) -> set[str]:
+    """Every file that the tool wants, by the tool's own rule."""
     posts, _ = dojo_archive.read_posts(feed, ACCOUNT)
-    return {f"note-{post.id}" for post in posts} | {
-        attachment.id for post in posts for attachment in post.attachments
-    }
+    return {attachment.id for post in posts for attachment in post.attachments}
 
 
 def known_to(data: bytes | None) -> set[str] | None:
@@ -397,12 +388,11 @@ def check_kill_state(tree: dict[str, bytes], before: dict[str, bytes]) -> list[s
 def check_final(tree: dict[str, bytes], feed: list[dict]) -> list[str]:
     problems = []
     now = saved_files(tree)
-    wanted = post_keys(feed)
-    for key in wanted:
+    for key in wanted_keys(feed):
         names = now.get(key, [])
         if len(names) != 1:
             problems.append(f"{key} has {len(names)} copies, not 1")
-    known = post_keys(json.loads(tree["output/feed.json"]))
+    known = wanted_keys(json.loads(tree["output/feed.json"]))
     problems += [f"saved {key}, which it does not want" for key in now if key not in known]
     junk = [name for name in tree if re.fullmatch(r"output/(\d{4}/)?\.partial-[^/]*", name)]
     problems += [f"junk file {name}" for name in junk]
@@ -427,9 +417,7 @@ def check_history(tree: dict[str, bytes], before: dict[str, bytes], feed: list[d
             problems.append(f"saved file {key} disappeared")
     page = tree.get("output/index.html", b"").decode()
     for key, names in now.items():
-        if not key.startswith("note-") and not any(
-            name.removeprefix("output/") in page for name in names
-        ):
+        if not any(name.removeprefix("output/") in page for name in names):
             problems.append(f"index.html forgot the file {key}")
     fresh_text = {entry["_id"]: entry["contents"]["body"] for entry in feed}
     for item in json.loads(before.get("output/feed.json") or b"[]"):
@@ -443,8 +431,6 @@ def check_bytes_final(tree: dict[str, bytes], before: dict[str, bytes]) -> list[
     problems = []
     now = saved_files(tree)
     for key, names in saved_files(before).items():
-        if key.startswith("note-"):
-            continue
         kept = {image_data(name, before[name]) for name in names if is_complete(name, before[name])}
         for name in now.get(key, []):
             if is_complete(name, tree[name]) and kept and image_data(name, tree[name]) not in kept:

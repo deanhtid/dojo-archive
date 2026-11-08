@@ -490,7 +490,6 @@ def test_class_of_a_known_child_with_no_school_gets_no_guess(archive):
     child = {"firstName": "Example", "classes": [{"_id": OTHER_CLASS_ID, "name": "Tutor"}]}
     network = Network([item(targetId=OTHER_CLASS_ID)], children=[CHILD, child])
     assert archive(network, "--gps") == 0
-    assert "Place: unknown" in saved_file(archive.folder, POST_ID).read_text(encoding="utf-8")
     tags = read_tags(saved_file(archive.folder), "-GPSLatitude", "-XMP-iptcCore:Location")
     assert "GPSLatitude" not in tags
     assert "Location" not in tags
@@ -510,9 +509,7 @@ def test_a_class_from_an_earlier_year_keeps_its_school(archive):
     network.children = [CHILD]
     downloads = len(network.downloads)
     assert archive(network) == 0
-    assert f"Place: {OTHER_SCHOOL.name}" in saved_file(archive.folder, POST_ID).read_text(
-        encoding="utf-8"
-    )
+    assert place_of(archive.folder) == OTHER_SCHOOL.name
     assert len(network.downloads) == downloads
 
 
@@ -522,9 +519,7 @@ def test_fresh_account_data_wins_over_a_remembered_target(archive):
     network.schools = {SCHOOL_ID: {"name": "Example Primary Renamed"}}
     network.children = [CHILD | {"schoolName": "Example Primary Renamed"}]
     assert archive(network) == 0
-    assert "Place: Example Primary Renamed" in saved_file(archive.folder, POST_ID).read_text(
-        encoding="utf-8"
-    )
+    assert place_of(archive.folder) == "Example Primary Renamed"
 
 
 def test_remembered_target_helps_a_known_child_whose_school_is_now_missing(archive):
@@ -533,9 +528,7 @@ def test_remembered_target_helps_a_known_child_whose_school_is_now_missing(archi
     network.children = [{"firstName": "Sample", "classes": [{"_id": CLASS_ID, "name": "Otters"}]}]
     network.parent = PARENT | {"schoolIds": []}
     assert archive(network) == 0
-    assert f"Place: {SCHOOL.name}" in saved_file(archive.folder, POST_ID).read_text(
-        encoding="utf-8"
-    )
+    assert place_of(archive.folder) == SCHOOL.name
 
 
 def test_unknown_target_with_a_remembered_second_school_gets_no_guess(archive):
@@ -544,10 +537,14 @@ def test_unknown_target_with_a_remembered_second_school_gets_no_guess(archive):
     assert archive(network, "--no-gps") == 0
     network.children = [CHILD]
     network.feed = [
-        item(_id="9" * 24, targetId="unknown", contents={"body": "x", "attachments": []})
+        item(
+            _id="9" * 24,
+            targetId="unknown",
+            contents={"body": "x", "attachments": [photo("7" * 24)]},
+        )
     ]
     assert archive(network) == 0
-    assert "Place: unknown" in saved_file(archive.folder, "9" * 24).read_text(encoding="utf-8")
+    assert place_of(archive.folder, "7" * 24) is None
 
 
 def test_a_broken_target_in_the_place_book_stops_the_run(archive, capsys):
@@ -1142,12 +1139,11 @@ def test_feed_keeps_items_with_no_id_once(tmp_path):
     assert dojo_archive.merge_feed(path, ["odd"]) == ["odd", {"no": "id"}]
 
 
-def test_notes_and_files_keep_full_ids_and_separate_keys(tmp_path):
+def test_saved_files_keep_full_ids_and_partial_files_do_not_count(tmp_path):
     (tmp_path / "2026").mkdir()
-    (tmp_path / "2026" / f"2026-05-01_Otters_{POST_ID}.post.txt").write_text("note")
     (tmp_path / "2026" / f"2026-05-01_Otters_{POST_ID}.jpg").write_text("photo")
     (tmp_path / "2026" / f".partial-2026-05-01_Otters_{ATTACHMENT_ID}.jpg").write_text("partial")
-    assert sorted(dojo_archive.index_saved(tmp_path)) == [POST_ID, f"note-{POST_ID}"]
+    assert list(dojo_archive.index_saved(tmp_path)) == [POST_ID]
 
 
 def test_ids_that_share_their_last_characters_stay_apart(archive):
@@ -1871,15 +1867,13 @@ def test_two_copies_after_a_kill_end_as_one_re_tagged_copy(archive, capsys):
     network = Network([item()])
     assert archive(network, "--no-gps") == 0
     photo_path = saved_file(archive.folder)
-    note_path = saved_file(archive.folder, POST_ID)
-    for path, key in ((photo_path, ATTACHMENT_ID), (note_path, POST_ID)):
-        shutil.copy(path, path.with_name(f"2026-09-09_Otters_{key}{''.join(path.suffixes)}"))
+    shutil.copy(photo_path, photo_path.with_name(f"2026-09-09_Otters_{ATTACHMENT_ID}.jpg"))
     (archive.folder / ".manifest.json").unlink()
     capsys.readouterr()
 
     assert archive(network) == 0
     assert "Saved 1, skipped 0, failed 0." in capsys.readouterr().out
-    assert saved_names(archive.folder) == sorted([photo_path.name, note_path.name])
+    assert saved_names(archive.folder) == [photo_path.name]
     assert archive(network) == 0
     assert "Saved 0, skipped 1, failed 0." in capsys.readouterr().out
     assert len(network.downloads) == 1
@@ -1926,7 +1920,6 @@ def test_lone_surrogates_do_not_stop_any_run(archive):
     assert archive(network) == 0
     assert saved_file(archive.folder, "8" * 24).exists()
     assert "emoji cut" in page_of(archive.folder)
-    assert "emoji cut" in saved_file(archive.folder, POST_ID).read_text(encoding="utf-8")
 
 
 def test_non_string_text_counts_as_absent(archive):
@@ -2133,12 +2126,10 @@ def test_empty_later_body_keeps_the_saved_body(archive, no_exiftool, blank):
     network = Network([text_item("Sports day was great")])
     assert archive(network, "--no-gps") == 0
     downloads = len(network.downloads)
-    note = saved_file(archive.folder, POST_ID).read_text(encoding="utf-8")
     network.feed = [text_item(blank)]
     assert archive(network) == 0
     assert feed_of(archive.folder)[0]["contents"]["body"] == "Sports day was great"
     assert "Sports day" in page_of(archive.folder)
-    assert saved_file(archive.folder, POST_ID).read_text(encoding="utf-8") == note
     assert len(network.downloads) == downloads
 
 
@@ -2245,6 +2236,37 @@ def test_real_bytes_for_each_type_are_saved(archive, no_exiftool, suffix, conten
     assert saved_file(archive.folder).read_bytes() == body
 
 
+def test_a_run_writes_no_note(archive, no_exiftool):
+    assert archive(Network([item(), text_item("No photos", _id="9" * 24)]), "--no-gps") == 0
+    assert saved_names(archive.folder) == [f"{FILE_STEM}.jpg"]
+
+
+def test_an_old_note_and_a_file_the_tool_no_longer_wants_stay_untouched(archive):
+    letter = attachment("file", "Letter.pdf", "https://files.example.test/letter.pdf")
+    flyer = attachment("photo", "Poster.png", "https://files.example.test/poster.png")
+    files = [photo(), {**letter, "_id": "1" * 24}, {**flyer, "_id": "2" * 24}]
+    network = Network([item(contents={"body": "One", "attachments": files})])
+    assert archive(network, "--no-gps") == 0
+    year = archive.folder / "2026"
+    kept = {
+        year / f"2026-05-01_Otters_{POST_ID}.post.txt": b"Date: 2026-05-01\n\nOne\n",
+        year / f"2026-05-01_Otters_{'1' * 24}.pdf": b"%PDF-1.7 letter",
+        year / f"2026-05-01_Otters_{'2' * 24}.png": PNG,
+    }
+    for path, data in kept.items():
+        path.write_bytes(data)
+        os.utime(path, (1_000_000_000, 1_000_000_000))
+
+    network.feed = [item(contents={"body": "We had fun yesterday.", "attachments": files})]
+    assert archive(network) == 0
+    assert archive(network) == 0
+    assert saved_file(archive.folder).name.startswith("2026-04-30_")
+    for path, data in kept.items():
+        assert path.read_bytes() == data
+        assert path.stat().st_mtime == 1_000_000_000
+    assert len(network.downloads) == 1
+
+
 @pytest.mark.parametrize("folder", ["Favourites", "20261", "202", "abcd", "2026/Holiday"])
 def test_a_parents_own_files_outside_year_folders_are_never_touched(archive, no_exiftool, folder):
     network = Network([item()])
@@ -2253,7 +2275,7 @@ def test_a_parents_own_files_outside_year_folders_are_never_touched(archive, no_
     mine.mkdir(parents=True)
     copy = mine / saved_file(archive.folder).name
     shutil.copy(saved_file(archive.folder), copy)
-    note = mine / saved_file(archive.folder, POST_ID).name
+    note = mine / f"2026-05-01_Otters_{POST_ID}.post.txt"
     note.write_text("my own note")
     partial = mine / ".partial-mine.jpg"
     partial.write_text("my own partial")
@@ -2675,24 +2697,17 @@ def saved_names(folder):
     return sorted(path.name for path in folder.glob("*/*") if not path.name.startswith("."))
 
 
-def test_a_class_name_that_changes_only_in_case_keeps_the_file_and_note(archive, capsys):
+def test_a_class_name_that_changes_only_in_case_keeps_the_file(archive, capsys):
     network = Network([item(headerSubtext="otters")])
     assert archive(network, "--no-gps") == 0
-    assert saved_names(archive.folder) == [
-        f"2026-05-01_otters_{POST_ID}.post.txt",
-        f"2026-05-01_otters_{ATTACHMENT_ID}.jpg",
-    ]
+    assert saved_names(archive.folder) == [f"2026-05-01_otters_{ATTACHMENT_ID}.jpg"]
     capsys.readouterr()
 
     network.feed = [item(headerSubtext="Otters")]
     assert archive(network) == 0
     assert "Saved 1" in capsys.readouterr().out
-    assert saved_names(archive.folder) == [
-        f"2026-05-01_Otters_{POST_ID}.post.txt",
-        f"2026-05-01_Otters_{ATTACHMENT_ID}.jpg",
-    ]
+    assert saved_names(archive.folder) == [f"2026-05-01_Otters_{ATTACHMENT_ID}.jpg"]
     assert read_tags(saved_file(archive.folder), "-XMP-dc:Subject")["Subject"][1] == "Otters"
-    assert "Group: Otters" in saved_file(archive.folder, POST_ID).read_text(encoding="utf-8")
     assert len(network.downloads) == 1
 
 
@@ -2772,9 +2787,8 @@ def only_school_post():
     return item(_id="9" * 24, targetId="2" * 24, contents=contents)
 
 
-def place_of(folder, key):
-    note = saved_file(folder, key).read_text(encoding="utf-8")
-    return next(line for line in note.splitlines() if line.startswith("Place: "))
+def place_of(folder, key=ATTACHMENT_ID):
+    return read_tags(saved_file(folder, key), "-XMP-iptcCore:Location").get("Location")
 
 
 def targets_of(folder):
@@ -2797,7 +2811,7 @@ def test_only_school_guess_survives_a_corrected_address(archive):
     network.schools = {SCHOOL_ID: {"name": SCHOOL.name, "address": {"city": "Corrected"}}}
     network.feed = [item(), only_school_post()]
     assert archive(network) == 0
-    assert place_of(archive.folder, "9" * 24) == f"Place: {SCHOOL.name}"
+    assert place_of(archive.folder, "7" * 24) == SCHOOL.name
     assert targets_of(archive.folder)["1" * 24]["address"]["city"] == "Corrected"
 
 
@@ -2811,7 +2825,7 @@ def test_only_school_guess_survives_a_failed_school_read(archive):
     network.schools = {}
     network.feed = [item(), only_school_post()]
     assert archive(network) == 0
-    assert place_of(archive.folder, "9" * 24) == f"Place: {SCHOOL.name}"
+    assert place_of(archive.folder, "7" * 24) == SCHOOL.name
 
 
 def test_only_school_guess_survives_an_address_that_became_known(archive):
@@ -2824,7 +2838,7 @@ def test_only_school_guess_survives_an_address_that_became_known(archive):
     network.schools = SCHOOL_REPLIES
     network.feed = [only_school_post()]
     assert archive(network) == 0
-    assert place_of(archive.folder, "9" * 24) == f"Place: {OTHER_SCHOOL.name}"
+    assert place_of(archive.folder, "7" * 24) == OTHER_SCHOOL.name
 
 
 def test_only_school_guess_uses_a_new_school_name(archive):
@@ -2836,7 +2850,7 @@ def test_only_school_guess_uses_a_new_school_name(archive):
     network.children = [CHILD | {"schoolName": renamed, "classes": []}]
     network.feed = [only_school_post()]
     assert archive(network) == 0
-    assert place_of(archive.folder, "9" * 24) == f"Place: {renamed}"
+    assert place_of(archive.folder, "7" * 24) == renamed
 
 
 def test_failed_school_read_keeps_the_remembered_address_field_by_field(archive):

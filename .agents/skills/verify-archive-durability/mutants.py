@@ -36,7 +36,7 @@ MUTANTS = (
         "recovers",
         "write text files directly, with no temporary file",
         FIRST,
-        '    partial = path.with_name(f".partial-{path.name}")\n    partial.unlink(missing_ok=True)\n    partial.touch(mode=mode)\n    partial.write_text(text, encoding="utf-8")\n    if timestamp is not None:\n        os.utime(partial, (timestamp, timestamp))\n    partial.replace(path)\n',
+        '    partial = path.with_name(f".partial-{path.name}")\n    partial.unlink(missing_ok=True)\n    partial.touch(mode=mode)\n    partial.write_text(text, encoding="utf-8")\n    partial.replace(path)\n',
         '    path.write_text(text, encoding="utf-8")\n',
     ),
     (
