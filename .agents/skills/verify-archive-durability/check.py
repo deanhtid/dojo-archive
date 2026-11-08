@@ -422,7 +422,8 @@ def check_history(tree: dict[str, bytes], before: dict[str, bytes], feed: list[d
     fresh_text = {entry["_id"]: entry["contents"]["body"] for entry in feed}
     for item in json.loads(before.get("output/feed.json") or b"[]"):
         body = item["contents"]["body"]
-        if not fresh_text.get(item["_id"]) and body not in page:
+        shown = any(file["_id"] in now for file in item["contents"]["attachments"])
+        if shown and not fresh_text.get(item["_id"]) and body not in page:
             problems.append(f"index.html forgot the post '{body}'")
     return problems
 

@@ -1124,6 +1124,23 @@ def test_page_escapes_post_text_and_links_saved_files(tmp_path):
     assert "Unofficial, not made by or linked to ClassDojo." in page
 
 
+def test_page_lists_only_posts_with_a_saved_photo_or_video(tmp_path):
+    (tmp_path / "2026").mkdir()
+    (tmp_path / "2026" / f"{FILE_STEM}.jpg").write_bytes(b"x")
+    saved = parse(item(contents={"body": "Sports day", "attachments": [photo()]}))
+    text_only = parse(item(_id="1" * 24, contents={"body": "Bring a coat", "attachments": []}))
+    unsaved = parse(item(_id="2" * 24, contents={"body": "Lost", "attachments": [photo("3" * 24)]}))
+    posts = [(post, Located(None, post.time)) for post in (saved, text_only, unsaved)]
+
+    dojo_archive.write_gallery(tmp_path, posts)
+
+    page = (tmp_path / "index.html").read_text(encoding="utf-8")
+    assert page.count("<article") == 1
+    assert "Sports day" in page
+    assert "Bring a coat" not in page
+    assert "Lost" not in page
+
+
 def test_feed_keeps_posts_that_left_it(tmp_path):
     path = tmp_path / "feed.json"
     old = text_item("old", _id="1" * 24)
@@ -2549,12 +2566,12 @@ def test_page_sorts_the_repeated_hour_at_a_clock_change_newest_first(archive, no
         item(
             _id="1" * 24,
             time="2026-10-25T00:30:00.000Z",
-            contents={"body": "One", "attachments": []},
+            contents={"body": "One", "attachments": [photo("1" * 24)]},
         ),
         item(
             _id="2" * 24,
             time="2026-10-25T01:30:00.000Z",
-            contents={"body": "Two", "attachments": []},
+            contents={"body": "Two", "attachments": [photo("2" * 24)]},
         ),
     ]
     network = Network(posts, parent=PARENT | {"timezone": "Europe/Paris"})

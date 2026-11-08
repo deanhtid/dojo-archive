@@ -1184,7 +1184,7 @@ def media_html(path: Path, output: Path) -> str:
 
 
 def write_gallery(output: Path, jobs: list[tuple[Post, Located]]) -> None:
-    """Keep the posts readable offline, after the class and its feed have moved on."""
+    """Keep the photos and their posts readable offline, after the feed has moved on."""
     files = index_saved(output)
     articles = []
     for post, located in sorted(jobs, key=lambda job: job[1].time.timestamp(), reverse=True):
@@ -1193,6 +1193,8 @@ def write_gallery(output: Path, jobs: list[tuple[Post, Located]]) -> None:
             for attachment in post.attachments
             if attachment.id in files
         )
+        if not media:
+            continue
         place = located.place.name if located.place else ""
         day = f"{located.time.day} {located.time:%B %Y}"
         heading = " · ".join(filter(None, (day, post.group, post.sender, place)))
