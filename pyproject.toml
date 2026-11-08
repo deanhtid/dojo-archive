@@ -1,6 +1,6 @@
 [project]
 name = "dojo-archive"
-version = "1.0.0"
+version = "1.1.0"
 description = "Archive your children's ClassDojo feed to your own computer"
 readme = "README.md"
 license = "MIT"
