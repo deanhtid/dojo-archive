@@ -1,6 +1,6 @@
 # dojo-archive
 
-dojo-archive saves your children's ClassDojo feed to your own computer. It saves notes, photos, videos and files. It also writes an offline page that you can read with no internet access.
+dojo-archive saves the photos and videos from your children's ClassDojo feed to your own computer. It skips letters, flyers and other paperwork. It also writes an offline page that you can read with no internet access.
 
 This tool is unofficial. ClassDojo did not make it and has no link to it.
 
@@ -54,9 +54,9 @@ The first time can take a few minutes. When it finishes, your browser shows ever
 
 ### Where your photos go
 
-The photos, videos and notes go into a folder called `ClassDojo` in your home folder. On a Mac, open Finder and press Shift, Command and H to see your home folder. On Windows, open `C:\Users\<your name>\ClassDojo`.
+The photos and videos go into a folder called `ClassDojo` in your home folder. On a Mac, open Finder and press Shift, Command and H to see your home folder. On Windows, open `C:\Users\<your name>\ClassDojo`.
 
-Open `index.html` in that folder to see every post, with no internet access.
+Open `index.html` in that folder to see every photo and video with its post, with no internet access.
 
 ### Get new photos later
 
@@ -156,18 +156,23 @@ The installers accept 2 settings. `DOJO_ARCHIVE_SOURCE` replaces the download li
 
 ### What the tool saves
 
+The tool saves photos and videos only. It skips letters, PDFs and other files. It also skips PNG and GIF pictures, because they are mostly graphics.
+
+From a school-wide post, the tool keeps videos, and photos that a camera named, such as `IMG_1234.jpg`. The check reads only the original file name, so a flyer with a camera name, or no name, can slip through.
+
 ```text
 ClassDojo/
-  index.html                                   every post and file, readable offline
+  index.html                                   each post with a photo or video, readable offline
   feed.json                                    every post as ClassDojo sent it
   .manifest.json                               a record of each file's tags and its own date
   .places.json                                 your location choice, the known places and each class's school
   2026/
     2026-05-01_Otters_0123456789abcdef01234567.jpg    a photo or video
-    2026-05-01_Otters_89abcdef0123456701234567.post.txt    the post text
 ```
 
 The tool works only in the year folders. It never touches your own files in any other folder.
+
+The tool never deletes a file that is already in your archive. An earlier version also saved notes, letters and flyers. They stay where they are, and the tool ignores them.
 
 The archive only grows. A post that leaves the ClassDojo feed stays in your archive. A blank reply or field from ClassDojo never removes text, a tag or a photo that you have. So an empty tag list keeps the saved tags. A teacher's edit to the text or the tags still changes your copy.
 
@@ -220,7 +225,7 @@ The tool sends nothing else, and it has no analytics.
 - OpenStreetMap does not list every venue. A venue that it cannot find becomes the school.
 - The tool does not save teacher messages.
 - The tool saves each file once. If ClassDojo later offers a different copy, the tool keeps the copy that it has.
-- The tool names photos, videos and PDFs by their first bytes, and other files by their link. It refuses a reply that is plainly an error message, not the file. It refuses text from a link with no file type. It refuses an HTML, XML or JSON reply unless the link names that type.
+- The tool names each photo and video by its first bytes. It refuses a reply that is text, because that is an error message, not the file.
 
 ### Development
 

@@ -29,5 +29,5 @@ Preconditions:
 
 - `audit.json` lists IDs only. Read a failing file with ExifTool yourself, and do not paste its text into chat.
 - A video can keep its own capture date, so its tag date can differ from its name.
-- PDFs get a file date and no tags. The audit counts them as `untagged files`.
+- A WebM video gets a file date and no tags. The audit counts it as `untagged files`.
 - An ExifTool read does not prove how a photo app shows a tag. Only the owner can check that.

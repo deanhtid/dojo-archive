@@ -29,7 +29,7 @@ Each feature file starts with an H1 title and a paragraph about visible behaviou
 
 ## Features
 
-- [Sync](./sync.md) covers downloads, repeat runs, `--since` and file types.
+- [Sync](./sync.md) covers downloads, repeat runs, `--since`, file types and the files that the tool skips.
 - [Metadata](./metadata.md) covers date, GPS, place, comment and keywords in the files.
 - [Place and date](./place-and-date.md) covers how the account and the post text set the place and the date.
 - [Login](./login.md) covers session reuse, an ended session and the emailed code.

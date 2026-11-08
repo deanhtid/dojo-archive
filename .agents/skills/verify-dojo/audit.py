@@ -86,8 +86,8 @@ def main_audit(output: Path, evidence: Path, since: date | None) -> int:
     counts: Counter[str] = Counter()
     for post in posts:
         located = dojo_archive.Located(places.place_of(post), dojo_archive.event_time(post))
-        if f"note-{post.id}" not in files:
-            failures.append({"id": post.id, "problem": "note missing"})
+        if any(attachment.id in files for attachment in post.attachments):
+            counts["posts with files"] += 1
         for attachment in post.attachments:
             key = attachment.id
             counts["expected files"] += 1
@@ -103,6 +103,10 @@ def main_audit(output: Path, evidence: Path, since: date | None) -> int:
                     failures.append({"id": attachment.id, "problem": problem})
             else:
                 counts["untagged files"] += 1
+
+    wanted = {attachment.id for post in posts for attachment in post.attachments}
+    for key in files.keys() - wanted:
+        failures.append({"id": key, "problem": "a file that the tool does not want"})
 
     partial = [path.name for path in output.glob("*/.partial-*")]
     report = {
