@@ -1047,6 +1047,12 @@ def download(session: requests.Session, job: Job, tagging: bool) -> Ready:
     return Ready(partial, job.stem.with_name(f"{job.stem.name}{suffix}"), entry)
 
 
+def changed_at(path: Path) -> float:
+    """Windows reports creation time as its change time, so it asks for that by name."""
+    info = path.stat()
+    return info.st_birthtime if sys.platform == "win32" else info.st_ctime
+
+
 def retag(job: Job, tagging: bool) -> Ready:
     """Tag a `.partial-` copy, so a kill or a failure leaves the saved file as it was.
 
@@ -1054,7 +1060,7 @@ def retag(job: Job, tagging: bool) -> Ready:
     date is the event date, so the change time shows which copy is newest.
     """
     at_name = [copy for copy in job.copies if copy.stem == job.stem.name]
-    source = at_name[0] if at_name else max(job.copies, key=lambda copy: copy.stat().st_ctime)
+    source = at_name[0] if at_name else max(job.copies, key=changed_at)
     final = job.stem.with_name(f"{job.stem.name}{source.suffix}")
     partial = final.with_name(f".partial-{final.name}")
     try:

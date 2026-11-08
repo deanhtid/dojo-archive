@@ -876,7 +876,8 @@ def test_a_chmod_that_cannot_work_is_ignored(archive, monkeypatch):
 
 
 @pytest.mark.parametrize("name", ["pixel.jpg", "pixel.png"])
-def test_write_metadata_round_trip(tmp_path, name):
+def test_write_metadata_round_trip(tmp_path, name, monkeypatch):
+    monkeypatch.setenv("TZ", "Europe/London")
     path = tmp_path / name
     shutil.copy(FIXTURES / name, path)
     post = parse(item(), Account(zone=dojo_archive.parse_zone("Europe/London"), school_of={}))
