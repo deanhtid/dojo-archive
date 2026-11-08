@@ -14,7 +14,7 @@ description: Check that dojo-archive never loses or worsens a saved photo, video
 Run the check if the diff changes a covered function or adds a write:
 
 ```sh
-git diff e105dee -- dojo_archive.py
+git diff f342aa6 -- dojo_archive.py
 ```
 
 | Promise | Covered code in `dojo_archive.py` |
@@ -26,7 +26,7 @@ git diff e105dee -- dojo_archive.py
 | `page-links` | `write_gallery`, `media_html`, `index_saved` |
 | `bytes-final` | `save_all`, `download`, `open_link`, `retag` |
 
-**Sync commit: `e105dee`.** The check last described the code at this commit. Move it only after you confirm that the check still describes `dojo_archive.py` at the new commit. A change to any file-writing code without a matching check change means the check needs another look.
+**Sync commit: `f342aa6`.** The check last described the code at this commit. Move it only after you confirm that the check still describes `dojo_archive.py` at the new commit. A change to any file-writing code without a matching check change means the check needs another look.
 
 ## Run it
 
