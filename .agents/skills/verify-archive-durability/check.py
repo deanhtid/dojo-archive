@@ -17,7 +17,6 @@ import sys
 import tempfile
 import threading
 import time
-import zlib
 from collections import defaultdict
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -31,10 +30,7 @@ sys.path.insert(0, str(ROOT))
 import dojo_archive  # noqa: E402
 
 JPEG = (ROOT / "tests/fixtures/pixel.jpg").read_bytes()
-PDF = b"%PDF-1.7 a real file"
-TEXT = b"Read chapter 2"
-ERROR_PAGE = b"<html>AccessDenied</html>"
-ERROR_TEXT = b"Access Denied"
+ERRORS = {"5": (b"Access Denied", "text/plain"), "6": (b"<html>AccessDenied</html>", "text/html")}
 OWN_FOLDER = "output/Favourites/"
 JPEG_TAG_SEGMENTS = {*range(0xE0, 0xF0), 0xFE}
 MAIN_FILE = str(Path(dojo_archive.__file__).resolve())
@@ -59,8 +55,9 @@ PROMISES = {
 
 
 # A post and a file share the last characters of an ID, to catch any use of a short ID.
-def attachment(key: str, suffix: str = "jpg") -> dict:
-    return {"_id": f"a{key:0>23}", "path": f"https://sphotos.classdojo.com/p/{key}.{suffix}"}
+def attachment(key: str, suffix: str = "jpg", kind: str = "photo", name: str = "") -> dict:
+    link = f"https://sphotos.classdojo.com/p/{key}.{suffix}"
+    return {"_id": f"a{key:0>23}", "type": kind, "path": link, "metadata": {"filename": name}}
 
 
 def post(key: str, body: str, files: list[dict], target: str = "class", day: int = 6) -> dict:
@@ -76,22 +73,24 @@ def post(key: str, body: str, files: list[dict], target: str = "class", day: int
     }
 
 
-CLASS_POST = post("1", "Sewing", [attachment("1"), attachment("2", "png")])
-SCHOOL_POST = post("2", "Book fair", [attachment("3")], target="school")
-EDITED_SCHOOL_POST = post("2", "Book fair raised money", [attachment("3")], target="school")
+LETTER = attachment("8", "pdf", kind="file")
+GRAPHIC = attachment("9", "png")
+FLYER = attachment("10", name="Book fair poster.jpg")
+CLASS_POST = post("1", "Sewing", [attachment("1"), attachment("2"), LETTER, GRAPHIC])
+SCHOOL_FILES = [attachment("3", name="IMG_0003.jpg"), FLYER]
+SCHOOL_POST = post("2", "Book fair", SCHOOL_FILES, target="school")
+EDITED_SCHOOL_POST = post("2", "Book fair raised money", SCHOOL_FILES, target="school")
 NOTE_POST = post("3", "No files here", [], target="school")
 FIRST_FEED = [CLASS_POST, SCHOOL_POST, NOTE_POST]
-MOVED_POST = post("1", "On Monday we had sewing", [attachment("1"), attachment("2", "png")])
+MOVED_POST = post("1", "On Monday we had sewing", [attachment("1"), attachment("2"), LETTER])
 NEW_POST = post("4", "Hockey", [attachment("4")], day=7)
 PLACEHOLDER = {
     "_id": attachment("1")["_id"],
     "path": "https://sphotos.classdojo.com/p/missing-image-2x.png",
 }
-LESS_POST = post("1", "", [PLACEHOLDER, attachment("2", "png")])
+LESS_POST = post("1", "", [PLACEHOLDER, attachment("2")])
 CASE_POST = {**CLASS_POST, "headerSubtext": CLASS_POST["headerSubtext"].upper()}
-FILES_POST = post(
-    "5", "Reading list", [attachment("5", "pdf"), attachment("6"), attachment("7", "txt")]
-)
+FILES_POST = post("5", "Reading list", [attachment("5"), attachment("6")])
 MOVED_FEED = [MOVED_POST, SCHOOL_POST, NOTE_POST]
 ALL_BODIES = {
     item["contents"]["body"]
@@ -140,7 +139,7 @@ SCENARIOS = (
         "a new download answers 200 with an error page",
         [],
         [FILES_POST],
-        bad=frozenset({"5", "6", "7"}),
+        bad=frozenset({"5", "6"}),
     ),
     Scenario(
         "the parent keeps own copies in a folder that is not a year",
@@ -169,15 +168,6 @@ SCENARIOS = (
 )
 
 
-def pixel_png(shade: int) -> bytes:
-    def chunk(kind: bytes, body: bytes) -> bytes:
-        return len(body).to_bytes(4) + kind + body + zlib.crc32(kind + body).to_bytes(4)
-
-    header = (1).to_bytes(4) * 2 + bytes([8, 0, 0, 0, 0])
-    idat = chunk(b"IDAT", zlib.compress(bytes([0, shade])))
-    return b"\x89PNG\r\n\x1a\n" + chunk(b"IHDR", header) + idat + chunk(b"IEND", b"")
-
-
 def image_data(name: str, data: bytes) -> bytes:
     """All of a saved file except its tags. A re-tag must keep it exactly.
 
@@ -191,14 +181,6 @@ def image_data(name: str, data: bytes) -> bytes:
                 kept.append(data[at:end])
             at = end
         return b"".join(kept) + data[at:]
-    if name.endswith(".png"):
-        found, at = [], 8
-        while at < len(data):
-            size = int.from_bytes(data[at : at + 4])
-            if data[at + 4 : at + 8] == b"IDAT":
-                found.append(data[at + 8 : at + 8 + size])
-            at += 12 + size
-        return b"".join(found)
     return data
 
 
@@ -257,16 +239,11 @@ class FakeNetwork:
             return FakeResponse(status=500)
         if key in self.dead:
             return FakeResponse(status=403)
-        if key in self.bad and suffix == "pdf":
-            return FakeResponse(body=ERROR_TEXT, content_type="text/plain")
         if key in self.bad:
-            return FakeResponse(body=ERROR_PAGE, content_type="text/html")
-        if suffix == "pdf":
-            return FakeResponse(body=PDF, content_type="application/pdf")
-        if suffix == "txt":
-            return FakeResponse(body=TEXT, content_type="text/plain")
-        if suffix == "png":
-            return FakeResponse(body=pixel_png(self.version), content_type="image/png")
+            body, content_type = ERRORS[key]
+            return FakeResponse(body=body, content_type=content_type)
+        if suffix != "jpg":
+            raise AssertionError(f"downloaded {key}.{suffix}, which the tool does not want")
         jpeg = JPEG[:-2] + b"\0" * self.version + JPEG[-2:]
         return FakeResponse(body=jpeg, content_type="image/jpeg")
 
@@ -356,12 +333,6 @@ def key_of(name: str) -> str:
 def is_complete(name: str, data: bytes) -> bool:
     if name.endswith(".jpg"):
         return data.startswith(b"\xff\xd8") and data.endswith(b"\xff\xd9")
-    if name.endswith(".png"):
-        return data.startswith(b"\x89PNG") and b"IEND" in data[-12:]
-    if name.endswith(".pdf"):
-        return data == PDF
-    if name.endswith(".txt") and not name.endswith(dojo_archive.NOTE_SUFFIX):
-        return data == TEXT
     if name.endswith(dojo_archive.NOTE_SUFFIX):
         text = data.decode("utf-8", "replace")
         return text.startswith("Date:") and any(text.endswith(f"{b}\n") for b in ALL_BODIES)
@@ -377,11 +348,11 @@ def saved_files(tree: dict[str, bytes]) -> dict[str, list[str]]:
 
 
 def post_keys(feed: list[dict]) -> set[str]:
-    keys = set()
-    for item in feed:
-        keys.add(f"note-{item['_id']}")
-        keys.update(file["_id"] for file in item["contents"]["attachments"])
-    return keys
+    """Every note and every file that the tool wants, by the tool's own rule."""
+    posts, _ = dojo_archive.read_posts(feed, ACCOUNT)
+    return {f"note-{post.id}" for post in posts} | {
+        attachment.id for post in posts for attachment in post.attachments
+    }
 
 
 def known_to(data: bytes | None) -> set[str] | None:
@@ -426,10 +397,13 @@ def check_kill_state(tree: dict[str, bytes], before: dict[str, bytes]) -> list[s
 def check_final(tree: dict[str, bytes], feed: list[dict]) -> list[str]:
     problems = []
     now = saved_files(tree)
-    for key in post_keys(feed):
+    wanted = post_keys(feed)
+    for key in wanted:
         names = now.get(key, [])
         if len(names) != 1:
             problems.append(f"{key} has {len(names)} copies, not 1")
+    known = post_keys(json.loads(tree["output/feed.json"]))
+    problems += [f"saved {key}, which it does not want" for key in now if key not in known]
     junk = [name for name in tree if re.fullmatch(r"output/(\d{4}/)?\.partial-[^/]*", name)]
     problems += [f"junk file {name}" for name in junk]
     return problems
@@ -481,7 +455,7 @@ def check_bytes_final(tree: dict[str, bytes], before: dict[str, bytes]) -> list[
 def check_tags(tree: dict[str, bytes], root: Path, gps: bool) -> list[str]:
     """The fixtures hold no capture date, so each photo's date must match its name."""
     photos = [name for names in saved_files(tree).values() for name in names]
-    photos = [name for name in photos if name.endswith((".jpg", ".png"))]
+    photos = [name for name in photos if name.endswith(".jpg")]
     if not photos:
         return []
     body_of = {

@@ -74,7 +74,7 @@ SCHOOL_REPLIES = {
 
 
 def photo(key=ATTACHMENT_ID):
-    return {"_id": key, "path": f"https://files.example.test/{key}.jpg?Policy=x"}
+    return {"_id": key, "type": "photo", "path": f"https://files.example.test/{key}.jpg?Policy=x"}
 
 
 def item(**changes):
@@ -336,6 +336,7 @@ def test_post_uses_the_account_zone_and_drops_placeholder_images():
 def test_video_uses_the_larger_source_file():
     video = {
         "_id": "9" * 24,
+        "type": "video",
         "path": "https://files.example.test/small.mp4",
         "sources": [{"path": "https://files.example.test/large.mp4"}],
     }
@@ -344,6 +345,100 @@ def test_video_uses_the_larger_source_file():
         "https://files.example.test/large.mp4",
         "https://files.example.test/small.mp4",
     )
+
+
+def attachment(kind, name=None, link="https://files.example.test/x.jpg?Policy=x"):
+    found = {"_id": ATTACHMENT_ID, "path": link}
+    found |= {"type": kind} if kind else {}
+    return found | ({"metadata": {"filename": name}} if name is not None else {})
+
+
+def is_wanted(found, target="class"):
+    contents = {"body": "x", "attachments": [found]}
+    return bool(parse(item(targetType=target, contents=contents)).attachments)
+
+
+@pytest.mark.parametrize(
+    ("found", "kept"),
+    [
+        (attachment("photo"), True),
+        (attachment("video", link="https://files.example.test/x.mp4"), True),
+        (attachment("file", link="https://files.example.test/letter.pdf"), False),
+        (attachment(None), False),
+        (attachment("link"), False),
+        (attachment("photo", "Poster.PNG"), False),
+        (attachment("photo", "Logo.gif"), False),
+        (attachment("photo", link="https://files.example.test/x.png?Policy=x"), False),
+        (attachment("photo", link="https://files.example.test/x.GIF"), False),
+        (attachment("video", "Clip.gif", "https://files.example.test/x.gif"), True),
+        (attachment("photo", "Book fair poster.jpg"), True),
+    ],
+)
+def test_a_class_post_keeps_only_photos_and_videos_that_are_not_graphics(found, kept):
+    assert is_wanted(found) is kept
+
+
+@pytest.mark.parametrize(
+    ("found", "kept"),
+    [
+        (attachment("photo", "IMG_1234.jpg"), True),
+        (attachment("photo", "img-1234.jpeg"), True),
+        (attachment("photo", "PHOTO-2026-05-01.jpg"), True),
+        (attachment("photo", "VID_0001.jpg"), True),
+        (attachment("photo", "DSC 0001.jpg"), True),
+        (attachment("photo", "PXL_20260501.jpg"), True),
+        (attachment("photo", "MVIMG_0001.jpg"), True),
+        (attachment("photo"), True),
+        (attachment("photo", ""), True),
+        (attachment("photo", "Book fair poster.jpg"), False),
+        (attachment("photo", "IMGsummer.jpg"), False),
+        (attachment("photo", "My IMG_1234.jpg"), False),
+        (attachment("photo", "IMG_1234.png"), False),
+        (attachment("video", "School play.mp4", "https://files.example.test/x.mp4"), True),
+        (attachment("file", "IMG_1234.jpg"), False),
+    ],
+)
+def test_a_school_wide_post_keeps_only_camera_photos_and_videos(found, kept):
+    assert is_wanted(found, target="school") is kept
+
+
+def test_a_portfolio_post_keeps_any_photo_name():
+    assert is_wanted(attachment("photo", "My drawing.jpg"), target="student")
+
+
+def test_an_odd_original_name_counts_as_no_name():
+    odd = attachment("photo") | {"metadata": {"filename": 5}}
+    assert is_wanted(odd, target="school")
+    assert is_wanted(attachment("photo") | {"metadata": "x"}, target="school")
+
+
+def test_a_run_downloads_and_counts_only_wanted_files(archive, capsys):
+    letter = attachment("file", "Letter.pdf", "https://files.example.test/letter.pdf")
+    graphic = attachment("photo", "Logo.png", "https://files.example.test/logo.png")
+    flyer = attachment("photo", "Book fair.jpg", "https://files.example.test/flyer.jpg")
+    camera = attachment("photo", "IMG_0001.jpg", "https://files.example.test/camera.jpg")
+    class_files = [photo(), {**letter, "_id": "1" * 24}, {**graphic, "_id": "2" * 24}]
+    school_files = [{**flyer, "_id": "3" * 24}, {**camera, "_id": "4" * 24}]
+    network = Network(
+        [
+            item(contents={"body": "Class", "attachments": class_files}),
+            item(
+                _id="9" * 24,
+                targetType="school",
+                targetId=SCHOOL_ID,
+                contents={"body": "School", "attachments": school_files},
+            ),
+        ]
+    )
+    assert archive(network, "--no-gps") == 0
+    output = capsys.readouterr().out
+    assert "Found 2 posts with 2 files." in output
+    assert "Saved 2, skipped 0, failed 0." in output
+    assert sorted(network.downloads) == sorted([photo()["path"], camera["path"]])
+    assert sorted(path.stem[-24:] for path in archive.folder.glob("*/*.jpg")) == [
+        "4" * 24,
+        ATTACHMENT_ID,
+    ]
 
 
 def english(body, time="2025-06-06T10:00:00.000Z"):
@@ -1133,12 +1228,12 @@ def mini_mov(path, media=b""):
     )
 
 
-def test_a_pdf_saves_untagged_with_the_post_date(archive):
-    network = Network([file_item("pdf")])
-    network.file_body, network.file_type = b"%PDF-1.4 small", "application/pdf"
+def test_a_webm_video_saves_untagged_with_the_post_date(archive):
+    network = Network([file_item("webm")])
+    network.file_body, network.file_type = b"\x1a\x45\xdf\xa3 small", "video/webm"
     assert archive(network, "--no-gps") == 0
     saved = saved_file(archive.folder)
-    assert saved.read_bytes() == b"%PDF-1.4 small"
+    assert saved.read_bytes() == b"\x1a\x45\xdf\xa3 small"
     assert saved.stat().st_mtime == datetime.fromisoformat(item()["time"]).timestamp()
 
 
@@ -2103,7 +2198,9 @@ def test_same_attachment_twice_in_one_post_saves_once(archive, no_exiftool):
 
 
 def file_attachment(suffix):
-    return {"_id": ATTACHMENT_ID, "path": f"https://files.example.test/{ATTACHMENT_ID}.{suffix}"}
+    kind = "video" if f".{suffix}" in dojo_archive.PLAYER_SUFFIXES else "photo"
+    link = f"https://files.example.test/{ATTACHMENT_ID}.{suffix}"
+    return {"_id": ATTACHMENT_ID, "type": kind, "path": link}
 
 
 def file_item(suffix, body="One"):
@@ -2118,18 +2215,13 @@ BAD_DOWNLOADS = [
     ("jpg", "image/jpeg", b"<html>AccessDenied</html>"),
     ("webp", "image/webp", b"RIFF1234WAVE"),
     ("mov", "video/quicktime", b"not a movie"),
-    ("pdf", "application/pdf", b"<html>not a pdf</html>"),
 ]
 GOOD_DOWNLOADS = [
     ("jpg", "image/jpeg", JPEG),
-    ("png", "image/png", (FIXTURES / "pixel.png").read_bytes()),
     ("webp", "image/webp", b"RIFF\x04\0\0\0WEBPVP8 "),
     ("mp4", "video/mp4", b"\0\0\0\x18ftypisom"),
     ("mov", "video/quicktime", b"\0\0\0\x14ftypqt  "),
     ("heic", "image/heic", b"\0\0\0\x18ftypheic"),
-    ("pdf", "application/pdf", b"%PDF-1.7 real"),
-    ("txt", "text/plain", b"Read chapter 2"),
-    ("zip", "application/zip", b"PK\x03\x04\x14\x00"),
 ]
 
 
@@ -2186,31 +2278,6 @@ def test_partial_files_go_from_the_root_and_year_folders_only(archive, no_exifto
     assert not (archive.folder / "2026" / ".partial-photo.jpg").exists()
 
 
-def test_txt_attachment_settles_is_linked_and_keeps_its_own_name(archive, no_exiftool):
-    network = Network([file_item("txt")])
-    network.file_body, network.file_type = b"Read chapter 2", "text/plain"
-    assert archive(network, "--no-gps") == 0
-    downloads = len(network.downloads)
-    assert archive(network) == 0
-    assert len(network.downloads) == downloads
-    saved = saved_file(archive.folder)
-    assert saved.name.endswith(f"{ATTACHMENT_ID}.txt")
-    assert saved.read_bytes() == b"Read chapter 2"
-    assert saved.name in page_of(archive.folder)
-    assert saved_file(archive.folder, POST_ID).name.endswith(f"{POST_ID}.post.txt")
-
-
-def test_note_and_txt_attachment_with_the_same_id_stay_apart(archive, no_exiftool):
-    contents = {"body": "x", "attachments": [{**file_attachment("txt"), "_id": POST_ID}]}
-    network = Network([item(contents=contents)])
-    network.file_body, network.file_type = b"Read chapter 2", "text/plain"
-    assert archive(network, "--no-gps") == 0
-    assert archive(network) == 0
-    assert len(network.downloads) == 1
-    names = sorted(path.name for path in archive.folder.glob("*/*"))
-    assert [name.split(POST_ID)[1] for name in names] == [".post.txt", ".txt"]
-
-
 def test_missing_exiftool_never_replaces_a_taggable_copy_and_says_it_waits(
     archive, no_exiftool, capsys
 ):
@@ -2236,15 +2303,15 @@ def test_missing_exiftool_never_replaces_a_taggable_copy_and_says_it_waits(
 
 
 def test_missing_exiftool_still_renames_a_file_that_takes_no_tags(archive, no_exiftool):
-    network = Network([file_item("pdf")])
-    network.file_body, network.file_type = b"%PDF-1.7 one", "application/pdf"
+    network = Network([file_item("webm")])
+    network.file_body, network.file_type = b"\x1a\x45\xdf\xa3 one", "video/webm"
     assert archive(network, "--no-gps") == 0
-    network.feed = [file_item("pdf", "We had fun yesterday.")]
-    network.file_body = b"%PDF-1.7 two"
+    network.feed = [file_item("webm", "We had fun yesterday.")]
+    network.file_body = b"\x1a\x45\xdf\xa3 two"
     assert archive(network) == 0
     saved = saved_file(archive.folder)
     assert saved.name.startswith("2026-04-30_")
-    assert saved.read_bytes() == b"%PDF-1.7 one"
+    assert saved.read_bytes() == b"\x1a\x45\xdf\xa3 one"
     assert len(network.downloads) == 1
 
 
@@ -2807,7 +2874,7 @@ REAL_FILES = [
     ("x.JPEG", "text/plain", JPEG, ".jpg"),
     ("x.jpg", "image/jpeg", PNG, ".png"),
     ("x.jpg", "binary/octet-stream", PNG, ".png"),
-    ("x.png", "image/png", JPEG, ".jpg"),
+    ("x.webp", "image/webp", JPEG, ".jpg"),
     ("x.jpg", "binary/octet-stream", b"RIFF\x04\0\0\0WEBPVP8 ", ".webp"),
     ("x.jpg", "binary/octet-stream", BOX + b"ftypheic", ".heic"),
     ("x.jpg", "binary/octet-stream", BOX + b"ftypheix", ".heic"),
@@ -2822,15 +2889,13 @@ REAL_FILES = [
     ("x.mov", "video/quicktime", BOX + b"pnot", ".mov"),
     ("x.pdf", "application/pdf", b"\r\n  %PDF-1.7 real", ".pdf"),
     ("files/x", "binary/octet-stream", b"%PDF-1.7 real", ".pdf"),
-    ("x.docx", "application/vnd.openxmlformats", b"PK\x03\x04\x14\x00", ".docx"),
-    ("x.csv", "text/csv", b"name,score\n", ".csv"),
-    ("x.txt", "text/plain", b"Read chapter 2", ".txt"),
+    ("x.raw", "binary/octet-stream", b"\x12\x34\x00\x56future-format", ".raw"),
 ]
 
 
-def wire_item(url_end, kind=None, body="One"):
-    attachment = {"_id": ATTACHMENT_ID, "path": f"https://files.example.test/{url_end}?Policy=x"}
-    attachment |= {"type": kind} if kind else {}
+def wire_item(url_end, kind="photo", body="One"):
+    link = f"https://files.example.test/{url_end}?Policy=x"
+    attachment = {"_id": ATTACHMENT_ID, "type": kind, "path": link}
     return item(contents={"body": body, "sentLanguage": "en", "attachments": [attachment]})
 
 
@@ -2891,17 +2956,6 @@ def test_an_error_body_is_never_saved_as_a_new_file(
     assert not list(archive.folder.glob(f"*/*{ATTACHMENT_ID}*"))
 
 
-def test_an_error_page_never_replaces_a_saved_text_file(archive, no_exiftool):
-    network = Network([wire_item("x.txt", "file")])
-    network.file_body, network.file_type = b"Read chapter 2", "text/plain"
-    assert archive(network, "--no-gps") == 0
-    network.feed = [wire_item("x.txt", "file", body="Two")]
-    network.file_body, network.file_type = b"<html>AccessDenied</html>", "text/html"
-    assert archive(network) == 0
-    assert saved_file(archive.folder).read_bytes() == b"Read chapter 2"
-    assert len(network.downloads) == 1
-
-
 @pytest.mark.parametrize(
     ("head", "suffix"),
     [
@@ -2914,62 +2968,32 @@ def test_an_error_page_never_replaces_a_saved_text_file(archive, no_exiftool):
 )
 def test_other_real_formats_are_named_by_their_bytes(head, suffix):
     assert dojo_archive.sniff(head) == suffix
-    dojo_archive.check_download(head, "photo", ".jpg", "image/jpeg")
+    dojo_archive.check_download(head)
 
 
 @pytest.mark.parametrize(
-    ("head", "kind", "link", "content_type"),
-    [
-        (b"\x12\x34\x00\x56future-format", "photo", ".jpg", "image/jpeg"),
-        (b"\x12\x34\x00\x56", "file", ".pdf", "application/pdf"),
-        (b"name,age\nSam,7\n", "file", ".csv", "text/csv"),
-        (b"{\\rtf1 hello}", "file", ".rtf", "application/rtf"),
-        (b"<svg></svg>", "file", ".svg", "image/svg+xml"),
-        (b"<html></html>", "file", ".html", "text/html"),
-        (b"<html></html>", "file", ".htm", "application/xhtml+xml"),
-        (b'{"score": 7}', "file", ".json", "application/json"),
-        (b"<list/>", "file", ".xml", "text/xml"),
-        (b"< 5 is small", "file", ".txt", "text/plain"),
-        (b"<b>bold</b>", "file", ".txt", "binary/octet-stream"),
-        (b"PK\x03\x04\x00\x00", "file", ".docx", "application/zip"),
-    ],
+    "head",
+    [b"\x12\x34\x00\x56future-format", b"%PDF-1.7 real", b"PK\x03\x04\x00\x00"],
 )
-def test_real_files_of_any_type_are_accepted(head, kind, link, content_type):
-    dojo_archive.check_download(head, kind, link, content_type)
+def test_real_bytes_of_any_type_are_accepted(head):
+    dojo_archive.check_download(head)
 
 
 @pytest.mark.parametrize(
-    ("head", "kind", "link", "content_type"),
+    "head",
     [
-        (b"", "file", ".txt", "text/plain"),
-        (b"Access Denied", "photo", ".jpg", "text/plain"),
-        (b"Service Unavailable\n", "file", ".docx", "text/plain"),
-        (b"<html>denied</html>", "file", ".xlsx", "text/html"),
-        (b'{"error":"expired"}', "file", "", "application/json"),
-        ("Access Denied".encode("utf-16"), "file", ".pdf", "text/plain"),
-        (b"<html>AccessDenied</html>", "file", ".txt", "text/html"),
-        (b"<Error>AccessDenied</Error>", "file", ".csv", "application/xml"),
-        (b'{"error":"expired"}', "file", ".md", "application/problem+json"),
+        b"",
+        b"Access Denied",
+        b"Service Unavailable\n",
+        b"<html>denied</html>",
+        b'{"error":"expired"}',
+        "Access Denied".encode("utf-16"),
+        b"<Error>AccessDenied</Error>",
     ],
 )
-def test_error_replies_are_refused(head, kind, link, content_type):
+def test_error_replies_are_refused(head):
     with pytest.raises(dojo_archive.BadDownload):
-        dojo_archive.check_download(head, kind, link, content_type)
-
-
-@pytest.mark.parametrize(
-    ("content_type", "body"),
-    [("text/html", b"<html>AccessDenied</html>"), ("application/json", b'{"error": "x"}')],
-)
-def test_an_error_page_at_a_text_link_is_never_saved(
-    archive, no_exiftool, capsys, content_type, body
-):
-    network = Network([wire_item("x.txt", "file")])
-    network.file_body, network.file_type = body, content_type
-    assert archive(network, "--no-gps") == 1
-    assert "Saved 0, skipped 0, failed 1." in capsys.readouterr().out
-    assert not list(archive.folder.glob(f"*/*{ATTACHMENT_ID}*"))
-    assert not list(archive.folder.glob("*/.partial-*"))
+        dojo_archive.check_download(head)
 
 
 LARGE_LINK = "https://files.example.test/large.mov"

@@ -137,8 +137,10 @@ MIME_SUFFIXES = {
 }
 SUFFIX_SPELLINGS = {".jpeg": ".jpg"}
 MEDIA_KINDS = ("photo", "video")
-MARKUP_SUFFIXES = {".htm", ".html", ".json", ".svg", ".xml"}
-TEXT_SUFFIXES = MARKUP_SUFFIXES | {".csv", ".md", ".rtf", ".txt"}
+GRAPHIC_SUFFIXES = {".png", ".gif"}
+# A school-wide post mixes event photos with flyers, and only a camera names a file like this.
+CAMERA_NAMES = ("IMG", "PHOTO", "VID", "DSC", "PXL", "MVIMG")
+CAMERA_NAME = re.compile(rf"(?:{'|'.join(CAMERA_NAMES)})[-_ ]", re.IGNORECASE)
 UTF16_MARKS = (b"\xff\xfe", b"\xfe\xff")
 VIDEO_SUFFIXES = {".mp4", ".mov"}
 IMAGE_SUFFIXES = {".avif", ".gif", ".heic", ".jpg", ".png", ".tif", ".webp"}
@@ -276,7 +278,8 @@ NO_ACCOUNT = Account(zone=None, school_of={})
 class Attachment:
     id: str
     links: tuple[str, ...]
-    kind: str = "file"
+    kind: str
+    name: str
 
 
 @dataclass(frozen=True)
@@ -291,6 +294,7 @@ class Post:
     people: tuple[str, ...]
     school: School | None
     attachments: tuple[Attachment, ...]
+    school_wide: bool
 
 
 @dataclass(frozen=True)
@@ -401,8 +405,20 @@ def parse_attachments(contents: Mapping[str, Any]) -> tuple[Attachment, ...]:
             key = parse_id(attachment["_id"])
             kind = attachment.get("type")
             kind = kind if kind in MEDIA_KINDS else "file"
-            found.setdefault(key, Attachment(key, parse_links(attachment), kind))
+            metadata = attachment.get("metadata")
+            name = clean_line(metadata.get("filename")) if isinstance(metadata, dict) else ""
+            found.setdefault(key, Attachment(key, parse_links(attachment), kind, name))
     return tuple(found.values())
+
+
+def wanted(post: Post, attachment: Attachment) -> bool:
+    """Decide from the feed alone, so paperwork, graphics and flyers never download."""
+    if attachment.kind != "photo":
+        return attachment.kind == "video"
+    suffixes = {Path(attachment.name).suffix.lower(), *map(link_suffix, attachment.links)}
+    if suffixes & GRAPHIC_SUFFIXES:
+        return False
+    return not (post.school_wide and attachment.name) or bool(CAMERA_NAME.match(attachment.name))
 
 
 def parse_person(tag: Mapping[str, Any]) -> str:
@@ -420,7 +436,7 @@ def parse_post(item: dict[str, Any], account: Account) -> Post:
     target = item.get("targetId")
     target_id = target if isinstance(target, str) else None
     people = (parse_person(tag) for tag in item.get("tags") or [] if tag.get("type") == "student")
-    return Post(
+    post = Post(
         id=parse_id(item["_id"]),
         target_id=target_id,
         time=datetime.fromisoformat(item["time"]).astimezone(account.zone),
@@ -431,7 +447,9 @@ def parse_post(item: dict[str, Any], account: Account) -> Post:
         people=tuple(filter(None, people)),
         school=account.school_for(target_id),
         attachments=parse_attachments(contents),
+        school_wide=item.get("targetType") == "school",
     )
+    return replace(post, attachments=tuple(a for a in post.attachments if wanted(post, a)))
 
 
 def read_posts(items: list[Any], account: Account) -> tuple[list[Post], int]:
@@ -1040,20 +1058,12 @@ def looks_like_text(head: bytes) -> bool:
     return head.startswith(UTF16_MARKS) or b"\0" not in head
 
 
-def check_download(head: bytes, kind: str, link: str, content_type: str) -> None:
+def check_download(head: bytes) -> None:
     """A file store can answer 200 with an error message, which must never become a saved file.
 
-    Refuse only what is plainly not the file, because an unusual real format must still save.
-    A saved file is final, so an HTML, XML or JSON reply must come from a link of that type.
+    Refuse only text, because an unusual real photo or video format must still save.
     """
-    if sniff(head):
-        return
-    if not head:
-        raise BadDownload
-    if not looks_like_text(head):
-        return
-    markup = content_type == "text/html" or content_type.endswith(("xml", "json"))
-    if kind in MEDIA_KINDS or link not in TEXT_SUFFIXES or (markup and link not in MARKUP_SUFFIXES):
+    if not sniff(head) and looks_like_text(head):
         raise BadDownload
 
 
@@ -1137,7 +1147,7 @@ def download(session: requests.Session, job: Job, exiftool: Sequence[str] | None
                     file.write(chunk)
             with partial.open("rb") as file:
                 head = file.read(HEAD_SIZE)
-            check_download(head, attachment.kind, link_suffix(link), content_type)
+            check_download(head)
             suffix = saved_suffix(head, content_type, link)
             partial = partial.replace(partial.with_name(f"{partial.name}{suffix}"))
             entry = finish(partial, job, exiftool)

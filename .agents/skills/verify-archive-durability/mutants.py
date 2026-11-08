@@ -106,14 +106,7 @@ MUTANTS = (
         "no-loss",
         "accept any 200 reply as the file",
         BAD_REPLY,
-        "            check_download(head, attachment.kind, link_suffix(link), content_type)\n",
-        "",
-    ),
-    (
-        "no-loss",
-        "accept an HTML error page at a text link",
-        BAD_REPLY,
-        " or (markup and link not in MARKUP_SUFFIXES)",
+        "            check_download(head)\n",
         "",
     ),
     (
