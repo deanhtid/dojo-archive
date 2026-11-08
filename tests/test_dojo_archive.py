@@ -1186,6 +1186,8 @@ class ReleaseServer:
 def release(monkeypatch, home):
     server = ReleaseServer()
     monkeypatch.setattr(dojo_archive, "EXIFTOOL_RELEASE", server.url)
+    # The stand-in programs cannot run, so a copy counts as working when its program is there.
+    monkeypatch.setattr(dojo_archive, "exiftool_runs", lambda command: Path(command[-1]).is_file())
     yield server
     server.server.shutdown()
     server.server.server_close()
@@ -1258,6 +1260,31 @@ def test_a_good_download_is_unpacked_once_and_reused(
     assert program.read_bytes() == PERL_PROGRAM
     assert len(release.requests) == 1
     assert capsys.readouterr().out == ""
+
+
+def test_a_copy_that_does_not_run_is_downloaded_again(
+    release, unix_with_perl, home, monkeypatch, capsys
+):
+    release.offer(monkeypatch, "EXIFTOOL_PERL", PERL_TAR)
+    program = managed(home) / "Image-ExifTool-13.61" / "exiftool"
+    assert find_exiftool() == ["/usr/bin/perl", str(program)]
+    program.unlink()
+
+    assert find_exiftool() == ["/usr/bin/perl", str(program)]
+    assert program.read_bytes() == PERL_PROGRAM
+    assert len(release.requests) == 2
+    assert capsys.readouterr().out == ""
+
+
+def test_a_new_copy_that_still_does_not_run_says_so_plainly(
+    release, unix_with_perl, home, monkeypatch, capsys
+):
+    release.offer(monkeypatch, "EXIFTOOL_PERL", PERL_TAR)
+    monkeypatch.setattr(dojo_archive, "exiftool_runs", lambda command: False)
+    assert find_exiftool() is None
+    output = capsys.readouterr().out
+    assert output.count("\n") == 1
+    assert "ExifTool" not in output
 
 
 def test_a_bad_checksum_is_refused_and_a_later_run_tries_again(

@@ -19,19 +19,23 @@
         }
     }
     $uvx = (Get-Command uvx).Source
-    $arguments = @('--quiet', '--python', '3.15', '--refresh-package', 'dojo-archive', '--from', $source, 'dojo-archive')
+    $arguments = @('--python', '3.15', '--from', $source, 'dojo-archive')
 
     # A batch file reads the OEM code page, so the user's folder name stays out of it.
-    $uvxInBatch = $uvx.Replace($env:USERPROFILE, '%USERPROFILE%')
-    $line = "`"$uvxInBatch`" " + (($arguments | ForEach-Object { "`"$_`"" }) -join ' ') + ' --pause %*'
-    $launcher = Join-Path ([Environment]::GetFolderPath('Desktop')) 'ClassDojo Photos.bat'
+    $uvxInBatch = "`"" + $uvx.Replace($env:USERPROFILE, '%USERPROFILE%') + "`""
+    $quotedArguments = ($arguments | ForEach-Object { "`"$_`"" }) -join ' '
+    # The launcher updates quietly first, then runs from the saved copy, so a computer with no
+    # internet still starts the tool, which then explains the problem in plain words.
+    $update = "$uvxInBatch --quiet --refresh-package dojo-archive $quotedArguments --version >nul 2>&1"
+    $run = "$uvxInBatch --quiet --offline $quotedArguments --pause %*"
     $stopped = 'echo ClassDojo Photos could not start. Check the internet connection, then try again.'
-    $lines = @('@echo off', $line, 'if errorlevel 1 (', $stopped, 'pause', ')')
+    $lines = @('@echo off', $update, $run, 'if errorlevel 1 (', $stopped, 'pause', ')')
+    $launcher = Join-Path ([Environment]::GetFolderPath('Desktop')) 'ClassDojo Photos.bat'
     Set-Content -LiteralPath $launcher -Value $lines -Encoding Ascii
     Write-Host 'Added ClassDojo Photos to your Desktop. Double-click it each time you want new photos.'
 
     if (-not $env:DOJO_ARCHIVE_NO_RUN) {
         Write-Host 'Starting the first run now. The first time can take a few minutes.'
-        & $uvx @arguments
+        & $uvx --quiet --refresh-package dojo-archive @arguments
     }
 }

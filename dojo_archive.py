@@ -845,19 +845,28 @@ def find_exiftool(session: requests.Session) -> list[str] | None:
         print(NO_PERL)
         return None
     folder = exiftool_folder()
-    if not folder.is_dir():
-        try:
-            install_exiftool(session, build, folder)
-        except (
-            requests.RequestException,
-            BadDownload,
-            OSError,
-            tarfile.TarError,
-            zipfile.BadZipFile,
-        ):
-            print(NO_TAGGER)
-            return None
-    return [*runner, str(folder / build.program)]
+    command = [*runner, str(folder / build.program)]
+    if folder.is_dir() and exiftool_runs(command):
+        return command
+    # Antivirus software can remove part of the copy, so a copy that does not run is replaced.
+    shutil.rmtree(folder, ignore_errors=True)
+    try:
+        install_exiftool(session, build, folder)
+    except requests.RequestException, BadDownload, OSError, tarfile.TarError, zipfile.BadZipFile:
+        print(NO_TAGGER)
+        return None
+    if not exiftool_runs(command):
+        print(NO_TAGGER)
+        return None
+    return command
+
+
+def exiftool_runs(command: Sequence[str]) -> bool:
+    try:
+        subprocess.run([*command, "-ver"], capture_output=True, check=True, timeout=TIMEOUT)
+    except OSError, subprocess.SubprocessError:
+        return False
+    return True
 
 
 def run_exiftool(exiftool: Sequence[str], *options: str, arguments: str) -> str:

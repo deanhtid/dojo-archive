@@ -67,7 +67,7 @@ jobs:
         if: runner.os == 'Linux'
         run: |
           desktop=$(xdg-user-dir DESKTOP 2>/dev/null || true)
-          exec_line=$(sed -n 's/^Exec=//p' "${desktop:-$HOME/Desktop}/ClassDojo Photos.desktop")
+          exec_line=$(sed -n 's/^Exec=//p' "${desktop:-$HOME/Desktop}/ClassDojo Photos.desktop" | sed 's/%%/%/g')
           test "$(eval "$exec_line --version")" = "$EXPECTED"
       - name: Run the installer on Windows
         if: runner.os == 'Windows'
