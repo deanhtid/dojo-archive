@@ -16,6 +16,8 @@ import sys
 import tarfile
 import tempfile
 import time
+import traceback
+import webbrowser
 import zipfile
 from collections import Counter, defaultdict
 from collections.abc import Callable, Iterator, Mapping, Sequence
@@ -52,6 +54,7 @@ LOGIN_REFUSALS = {
 }
 FEED_URL = f"{BASE_URL}/api/storyFeed?includePrivate=true"
 USER_AGENT = "dojo-archive (https://github.com/deanhtid/dojo-archive)"
+ISSUES_URL = "https://github.com/deanhtid/dojo-archive/issues"
 GEOCODE_URL = "https://nominatim.openstreetmap.org/search"
 GEOCODE_INTERVAL = 1.1
 GEOCODE_RADIUS = 1.0
@@ -71,7 +74,7 @@ TIMEOUT = 60
 WORKERS = 5
 PROGRESS_EVERY = 100
 GROUP_IN_NAME = 60
-EXTRA_COUNTS = ("missing", "not tagged", "waiting for ExifTool")
+EXTRA_COUNTS = ("missing", "not tagged", "waiting for tags")
 EXIFTOOL_RELEASE = "https://github.com/deanhtid/dojo-archive/releases/download/exiftool-13.61"
 NO_PERL = "This computer has no Perl, so files get names and dates but no tags."
 NO_TAGGER = (
@@ -572,7 +575,7 @@ def read_state(path: Path, shape: type) -> Any:
             break
         target = path.with_name(f"{path.name}.damaged.{number}")
     path.replace(target)
-    print(f"{path.name} was damaged, so it moved to {target.name}.")
+    print(f"A saved record was damaged, so the tool kept it as {target.name} and made a new one.")
     return shape()
 
 
@@ -1444,7 +1447,7 @@ def save_all(
                     if current and len(copies) == 1:
                         counts["skipped"] += 1
                     elif taggable and not exiftool:
-                        counts["waiting for ExifTool"] += 1
+                        counts["waiting for tags"] += 1
                     elif copies:
                         futures[executor.submit(retag, job, exiftool)] = job
                     else:
@@ -1489,7 +1492,7 @@ def run(session: requests.Session, account: Account, output: Path, args: argpars
     files = {attachment.id for post in chosen for attachment in post.attachments}
     print(f"Found {len(chosen)} posts with {len(files)} files.")
     if unreadable:
-        print(f"Could not read {unreadable} feed items. They stay in {FEED_NAME}.")
+        print(f"Could not read {unreadable} posts. The archive keeps them.")
 
     exiftool = find_exiftool(new_session())
 
@@ -1508,7 +1511,7 @@ def run(session: requests.Session, account: Account, output: Path, args: argpars
     write_gallery(output, [(post, located[post.id]) for post in posts])
     print(summary(counts))
     print(f"Your archive: {(output / GALLERY_NAME).as_uri()}")
-    print("Run the same command again at any time to get new posts.")
+    print("Run this again at any time to get new posts.")
     return 1 if counts["failed"] or counts["missing"] else 0
 
 
@@ -1527,17 +1530,19 @@ def parse_args() -> argparse.Namespace:
         help="Add or leave out locations. The archive remembers the choice.",
     )
     parser.add_argument("--version", action="version", version=f"dojo-archive {version(PACKAGE)}")
+    parser.add_argument("--pause", action="store_true", help=argparse.SUPPRESS)
     return parser.parse_args()
 
 
-def main() -> int:
-    args = parse_args()
+def sync(args: argparse.Namespace) -> int:
     output = args.output.expanduser().resolve()
     print(f"dojo-archive {version(PACKAGE)}. {NOTICE} See the README about ClassDojo's terms.")
     print(f"Archive folder: {output}")
+    page = output / GALLERY_NAME
+    first_run = not page.exists()
     try:
         session, parent = open_session()
-        return run(session, read_account(session, parent), output, args)
+        code = run(session, read_account(session, parent), output, args)
     except KeyboardInterrupt:
         print("Stopped. Run again to continue.")
         return 130
@@ -1546,9 +1551,31 @@ def main() -> int:
         return 1
     except requests.RequestException as error:
         print(
-            f"Could not reach ClassDojo ({type(error).__name__}). Run this again.", file=sys.stderr
+            f"Could not reach ClassDojo ({type(error).__name__}). "
+            "Check the internet connection, then run this again.",
+            file=sys.stderr,
         )
         return 1
+    if first_run or args.pause:
+        webbrowser.open(page.as_uri())
+    return code
+
+
+def main() -> int:
+    """With `--pause`, the window that the Desktop launcher opened stays until Enter."""
+    args = parse_args()
+    try:
+        return sync(args)
+    except Exception:
+        if not args.pause:
+            raise
+        traceback.print_exc()
+        print(f"Something went wrong. Please report it at {ISSUES_URL}", file=sys.stderr)
+        return 1
+    finally:
+        if args.pause:
+            with contextlib.suppress(EOFError, KeyboardInterrupt):
+                input("Press Enter to close this window.")
 
 
 if __name__ == "__main__":

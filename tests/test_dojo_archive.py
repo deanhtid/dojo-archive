@@ -284,6 +284,14 @@ def typed(monkeypatch):
     return prompts
 
 
+@pytest.fixture(autouse=True)
+def browser(monkeypatch):
+    """Record each page that the tool opens, so no test opens a real browser."""
+    opened = []
+    monkeypatch.setattr("webbrowser.open", opened.append)
+    return opened
+
+
 @pytest.fixture
 def archive(home, typed, tmp_path, monkeypatch):
     """Run the real command against a fake network. Return its exit code."""
@@ -790,8 +798,67 @@ def test_first_run_output_matches_the_promised_lines(archive, capsys):
     ]
     assert lines[-3] == "Saved 1, skipped 0, failed 0."
     assert lines[-2] == f"Your archive: {(archive.folder / 'index.html').as_uri()}"
-    assert lines[-1] == "Run the same command again at any time to get new posts."
+    assert lines[-1] == "Run this again at any time to get new posts."
     assert not any("Otters" in line or "Example Primary" in line for line in lines)
+
+
+def test_the_archive_page_opens_on_the_first_run_only(archive, browser):
+    network = Network([item()])
+    assert archive(network) == 0
+    assert archive(network) == 0
+    assert browser == [(archive.folder / "index.html").as_uri()]
+
+
+CLOSE_PROMPT = "Press Enter to close this window."
+
+
+def test_pause_opens_the_page_and_waits_for_enter(archive, browser):
+    network = Network([item()])
+    assert archive(network) == 0
+    archive.typed.answers[:] = [""]
+    assert archive(network, "--pause") == 0
+    assert len(browser) == 2
+    assert archive.typed.seen[-1] == CLOSE_PROMPT
+    assert archive.typed.answers == []
+
+
+def test_pause_is_hidden_from_help(monkeypatch, capsys):
+    monkeypatch.setattr("sys.argv", ["dojo-archive", "--pause"])
+    assert dojo_archive.parse_args().pause
+    monkeypatch.setattr("sys.argv", ["dojo-archive", "--help"])
+    with pytest.raises(SystemExit):
+        dojo_archive.parse_args()
+    assert "pause" not in capsys.readouterr().out
+
+
+def fail_unexpectedly(*_):
+    raise RuntimeError("a bug")
+
+
+@pytest.mark.parametrize(("trouble", "code"), [("no network", 1), ("ctrl-c", 130), ("a bug", 1)])
+def test_pause_waits_for_enter_after_an_error_or_ctrl_c(
+    archive, monkeypatch, capsys, browser, trouble, code
+):
+    monkeypatch.setattr(dojo_archive, "WORKERS", 1)
+    network = Network([item()])
+    if trouble == "no network":
+        network.fail_with = requests.ConnectionError()
+    elif trouble == "ctrl-c":
+        network.interrupt_on = photo()["path"]
+    else:
+        monkeypatch.setattr(dojo_archive, "write_gallery", fail_unexpectedly)
+    assert archive(network, "--pause") == code
+    assert archive.typed.seen[-1] == CLOSE_PROMPT
+    assert browser == []
+    if trouble == "a bug":
+        assert "RuntimeError: a bug" in capsys.readouterr().err
+
+
+def test_an_unexpected_error_without_pause_stops_as_usual(archive, monkeypatch):
+    monkeypatch.setattr(dojo_archive, "write_gallery", fail_unexpectedly)
+    with pytest.raises(RuntimeError):
+        archive(Network([item()]))
+    assert CLOSE_PROMPT not in archive.typed.seen
 
 
 def test_login_sends_the_code_to_the_same_session_with_no_password(archive):
@@ -1479,7 +1546,7 @@ def test_a_changed_photo_keeps_its_name_until_exiftool_arrives(archive, no_exift
     network.feed = [text_item("We had fun yesterday.")]
     assert archive(network) == 0
     assert saved_file(archive.folder) == first
-    assert "waiting for ExifTool 1" in summary_lines(capsys)[-1]
+    assert "waiting for tags 1" in summary_lines(capsys)[-1]
 
     no_exiftool(True)
     assert archive(network) == 0
@@ -1622,7 +1689,7 @@ def test_unreadable_feed_item_is_counted_and_kept_in_the_feed_file(archive, caps
     network = Network([item(), broken, "not even an object"])
     assert archive(network, "--no-gps") == 0
     output = capsys.readouterr().out
-    assert "Could not read 2 feed items." in output
+    assert "Could not read 2 posts. The archive keeps them." in output
     assert "Private words" not in output
     assert "Saved 1, skipped 0, failed 0." in output
     feed = json.loads((archive.folder / "feed.json").read_text(encoding="utf-8"))
@@ -1807,7 +1874,7 @@ def test_an_odd_id_makes_the_item_unreadable_and_never_reaches_a_path(
 ):
     network = Network([raw])
     assert archive(network, "--no-gps") == 0
-    assert "Could not read 1 feed items." in capsys.readouterr().out
+    assert "Could not read 1 posts. The archive keeps them." in capsys.readouterr().out
     assert raw in feed_of(archive.folder)
     assert network.downloads == []
     assert not list(archive.folder.glob("*/*"))
@@ -2131,7 +2198,7 @@ def test_missing_exiftool_never_replaces_a_taggable_copy_and_says_it_waits(
     no_exiftool(False)
     network.feed = [text_item("Edited")]
     assert archive(network) == 0
-    assert "waiting for ExifTool 1" in capsys.readouterr().out
+    assert "waiting for tags 1" in capsys.readouterr().out
     assert path.read_bytes() == before
 
     no_exiftool(True)
@@ -2203,8 +2270,8 @@ def test_damaged_state_moves_aside_and_the_run_continues(archive, capsys, name, 
 
     assert archive(network) == 0
     lines = capsys.readouterr().out.splitlines()
-    assert [line for line in lines if line.endswith(".damaged.")] == [
-        f"{name} was damaged, so it moved to {name}.damaged."
+    assert [line for line in lines if line.startswith("A saved record")] == [
+        f"A saved record was damaged, so the tool kept it as {name}.damaged and made a new one."
     ]
     assert (archive.folder / f"{name}.damaged").read_text() == damage
     assert json.loads((archive.folder / name).read_text(encoding="utf-8"))
