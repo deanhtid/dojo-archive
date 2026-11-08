@@ -835,9 +835,9 @@ def fail_unexpectedly(*_):
     raise RuntimeError("a bug")
 
 
-@pytest.mark.parametrize(("trouble", "code"), [("no network", 1), ("ctrl-c", 130), ("a bug", 1)])
+@pytest.mark.parametrize("trouble", ["no network", "ctrl-c", "a bug"])
 def test_pause_waits_for_enter_after_an_error_or_ctrl_c(
-    archive, monkeypatch, capsys, browser, trouble, code
+    archive, monkeypatch, capsys, browser, trouble
 ):
     monkeypatch.setattr(dojo_archive, "WORKERS", 1)
     network = Network([item()])
@@ -847,7 +847,7 @@ def test_pause_waits_for_enter_after_an_error_or_ctrl_c(
         network.interrupt_on = photo()["path"]
     else:
         monkeypatch.setattr(dojo_archive, "write_gallery", fail_unexpectedly)
-    assert archive(network, "--pause") == code
+    assert archive(network, "--pause") == 0, "the launcher must not pause a second time"
     assert archive.typed.seen[-1] == CLOSE_PROMPT
     assert browser == []
     if trouble == "a bug":

@@ -25,7 +25,9 @@
     $uvxInBatch = $uvx.Replace($env:USERPROFILE, '%USERPROFILE%')
     $line = "`"$uvxInBatch`" " + (($arguments | ForEach-Object { "`"$_`"" }) -join ' ') + ' --pause %*'
     $launcher = Join-Path ([Environment]::GetFolderPath('Desktop')) 'ClassDojo Photos.bat'
-    Set-Content -LiteralPath $launcher -Value @('@echo off', $line) -Encoding Ascii
+    $stopped = 'echo ClassDojo Photos could not start. Check the internet connection, then try again.'
+    $lines = @('@echo off', $line, 'if errorlevel 1 (', $stopped, 'pause', ')')
+    Set-Content -LiteralPath $launcher -Value $lines -Encoding Ascii
     Write-Host 'Added ClassDojo Photos to your Desktop. Double-click it each time you want new photos.'
 
     if (-not $env:DOJO_ARCHIVE_NO_RUN) {

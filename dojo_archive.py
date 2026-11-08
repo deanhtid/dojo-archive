@@ -1562,20 +1562,24 @@ def sync(args: argparse.Namespace) -> int:
 
 
 def main() -> int:
-    """With `--pause`, the window that the Desktop launcher opened stays until Enter."""
+    """With `--pause`, the window that the Desktop launcher opened stays until Enter.
+
+    That window has already shown the result, so a paused run ends with code 0. The launcher
+    then pauses by itself only when the tool could not start at all.
+    """
     args = parse_args()
-    try:
+    if not args.pause:
         return sync(args)
+    try:
+        sync(args)
+    except KeyboardInterrupt:
+        pass
     except Exception:
-        if not args.pause:
-            raise
         traceback.print_exc()
         print(f"Something went wrong. Please report it at {ISSUES_URL}", file=sys.stderr)
-        return 1
-    finally:
-        if args.pause:
-            with contextlib.suppress(EOFError, KeyboardInterrupt):
-                input("Press Enter to close this window.")
+    with contextlib.suppress(EOFError, KeyboardInterrupt):
+        input("Press Enter to close this window.")
+    return 0
 
 
 if __name__ == "__main__":
