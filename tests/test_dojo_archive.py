@@ -100,10 +100,23 @@ def parse(raw, account=ACCOUNT):
 
 
 def read_tags(path: Path, *names: str) -> dict:
+    """Pass the path on stdin as UTF-8, as the tool does, because Windows garbles some names."""
     result = subprocess.run(
-        ["exiftool", "-json", "-n", "-api", "QuickTimeUTC", *names, str(path)],
+        [
+            "exiftool",
+            "-charset",
+            "filename=UTF8",
+            "-json",
+            "-n",
+            "-api",
+            "QuickTimeUTC",
+            *names,
+            "-@",
+            "-",
+        ],
+        input=f"{path}\n",
         capture_output=True,
-        text=True,
+        encoding="utf-8",
         check=True,
     )
     return json.loads(result.stdout)[0]
