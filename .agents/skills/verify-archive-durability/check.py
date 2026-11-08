@@ -42,9 +42,9 @@ ACCOUNT = dojo_archive.Account(
 )
 PROMISES = {
     "no-loss": "A kill at any moment leaves a complete copy of everything already saved, "
-    "and the parent's own files as they were.",
+    "and the parent's own files and an older version's files as they were.",
     "recovers": "One more run after any kill succeeds, with no manual step, tags each photo "
-    "for its post, and leaves no junk.",
+    "for its post, saves nothing unwanted, and leaves no junk.",
     "settles": "A run after that recovery downloads nothing and changes nothing.",
     "keeps-history": "A post that leaves the feed, or a later reply that holds less, costs "
     "nothing in the files, feed.json or index.html.",
@@ -92,6 +92,11 @@ LESS_POST = post("1", "", [PLACEHOLDER, attachment("2")])
 CASE_POST = {**CLASS_POST, "headerSubtext": CLASS_POST["headerSubtext"].upper()}
 FILES_POST = post("5", "Reading list", [attachment("5"), attachment("6")])
 MOVED_FEED = [MOVED_POST, SCHOOL_POST, TEXT_POST]
+OLD_FILES = {
+    f"output/2026/2026-05-06_Otters_{CLASS_POST['_id']}.post.txt": b"Date: 2026-05-06\n\nSewing\n",
+    f"output/2026/2026-05-06_Otters_{LETTER['_id']}.pdf": b"%PDF-1.7 letter",
+    f"output/2026/2026-05-06_Test_First_School_{FLYER['_id']}.jpg": JPEG,
+}
 
 
 @dataclass(frozen=True)
@@ -105,6 +110,7 @@ class Scenario:
     bad: frozenset[str] = frozenset()
     dead: frozenset[str] = frozenset()
     own_files: bool = False
+    old_files: bool = False
     gps: bool = True
 
 
@@ -142,6 +148,12 @@ SCENARIOS = (
         FIRST_FEED,
         MOVED_FEED,
         own_files=True,
+    ),
+    Scenario(
+        "an older version saved a note, a letter and a flyer",
+        FIRST_FEED,
+        MOVED_FEED,
+        old_files=True,
     ),
     Scenario(
         "a class name changes only in case",
@@ -375,9 +387,7 @@ def check_kill_state(tree: dict[str, bytes], before: dict[str, bytes]) -> list[s
         new_ids = known_to(tree.get("output/feed.json"))
         if new_ids is None or not old_ids <= new_ids:
             problems.append("feed.json lost saved knowledge or is unreadable")
-    for name, data in before.items():
-        if name.startswith(OWN_FOLDER) and tree.get(name) != data:
-            problems.append(f"changed the parent's own file {name.removeprefix(OWN_FOLDER)}")
+    problems += check_kept(tree, before)
     if "output/index.html" in before and not tree.get("output/index.html", b"").endswith(
         b"</html>\n"
     ):
@@ -385,14 +395,23 @@ def check_kill_state(tree: dict[str, bytes], before: dict[str, bytes]) -> list[s
     return problems
 
 
-def check_final(tree: dict[str, bytes], feed: list[dict]) -> list[str]:
+def check_kept(tree: dict[str, bytes], before: dict[str, bytes]) -> list[str]:
+    """The parent's own files, and files that the tool no longer saves, never change."""
+    return [
+        f"changed {name.removeprefix('output/')}"
+        for name, data in before.items()
+        if (name.startswith(OWN_FOLDER) or name in OLD_FILES) and tree.get(name) != data
+    ]
+
+
+def check_final(tree: dict[str, bytes], feed: list[dict], before: dict[str, bytes]) -> list[str]:
     problems = []
     now = saved_files(tree)
     for key in wanted_keys(feed):
         names = now.get(key, [])
         if len(names) != 1:
             problems.append(f"{key} has {len(names)} copies, not 1")
-    known = wanted_keys(json.loads(tree["output/feed.json"]))
+    known = wanted_keys(json.loads(tree["output/feed.json"])) | set(saved_files(before))
     problems += [f"saved {key}, which it does not want" for key in now if key not in known]
     junk = [name for name in tree if re.fullmatch(r"output/(\d{4}/)?\.partial-[^/]*", name)]
     problems += [f"junk file {name}" for name in junk]
@@ -416,8 +435,9 @@ def check_history(tree: dict[str, bytes], before: dict[str, bytes], feed: list[d
         if key not in now:
             problems.append(f"saved file {key} disappeared")
     page = tree.get("output/index.html", b"").decode()
+    wanted = wanted_keys(json.loads(tree["output/feed.json"]))
     for key, names in now.items():
-        if not any(name.removeprefix("output/") in page for name in names):
+        if key in wanted and not any(name.removeprefix("output/") in page for name in names):
             problems.append(f"index.html forgot the file {key}")
     fresh_text = {entry["_id"]: entry["contents"]["body"] for entry in feed}
     for item in json.loads(before.get("output/feed.json") or b"[]"):
@@ -441,7 +461,8 @@ def check_bytes_final(tree: dict[str, bytes], before: dict[str, bytes]) -> list[
 
 def check_tags(tree: dict[str, bytes], root: Path, gps: bool) -> list[str]:
     """The fixtures hold no capture date, so each photo's date must match its name."""
-    photos = [name for names in saved_files(tree).values() for name in names]
+    wanted = wanted_keys(json.loads(tree["output/feed.json"]))
+    photos = [name for key, names in saved_files(tree).items() if key in wanted for name in names]
     photos = [name for name in photos if name.endswith(".jpg")]
     if not photos:
         return []
@@ -497,6 +518,9 @@ def run_scenario(scenario: Scenario, root: Path, results: dict, stop_on: str | N
         sync(root, FakeNetwork(scenario.before), exiftool=scenario.exiftool_before)
     if scenario.own_files:
         add_own_files(root)
+    if scenario.old_files:
+        for name, data in OLD_FILES.items():
+            (root / name).write_bytes(data)
     before = read_tree(root)
     network = FakeNetwork(scenario.feed, scenario.failing, scenario.bad, scenario.dead, version=1)
     states = record_every_kill(root, network, scenario.gps)
@@ -521,7 +545,8 @@ def run_scenario(scenario: Scenario, root: Path, results: dict, stop_on: str | N
         final = read_tree(root)
         if code != 0:
             report("recovers", where, [f"next run returned {code}"])
-        report("recovers", where, check_final(final, next_feed))
+        report("no-loss", where, check_kept(final, before))
+        report("recovers", where, check_final(final, next_feed, before))
         report("recovers", where, check_tags(final, root, scenario.gps))
         report("bytes-final", where, check_bytes_final(final, tree))
         report("page-links", where, check_links(final))

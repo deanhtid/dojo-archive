@@ -22,6 +22,7 @@ EXIFTOOL = "first run without ExifTool, then with ExifTool"
 LESS = "a later reply has a placeholder and blanked text"
 BAD_REPLY = "a new download answers 200 with an error page"
 OWN_FILES = "the parent keeps own copies in a folder that is not a year"
+OLD_FILES = "an older version saved a note, a letter and a flyer"
 CASE_ONLY = "a class name changes only in case"
 DEAD_CHANGE = "every link is dead and posts change"
 MUTANTS = (
@@ -115,6 +116,13 @@ MUTANTS = (
         OWN_FILES,
         '    for path in sorted(output.glob(f"{YEAR_FOLDER}/*")):\n',
         '    for path in sorted(output.glob("*/*")):\n',
+    ),
+    (
+        "no-loss",
+        "delete saved files that the tool no longer wants",
+        OLD_FILES,
+        "    owners = newest_owners(jobs)\n",
+        "    owners = newest_owners(jobs)\n    for key in set(existing) - set(owners):\n        for path in existing.pop(key):\n            path.unlink()\n",
     ),
     (
         "no-loss",

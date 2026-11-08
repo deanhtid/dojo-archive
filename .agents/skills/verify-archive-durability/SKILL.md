@@ -1,11 +1,11 @@
 ---
 name: verify-archive-durability
-description: Check that dojo-archive never loses or worsens a saved photo or post. It kills the real sync at every point and tests recovery. Use after a change to how dojo_archive.py writes, replaces or deletes files, notes, feed.json, .manifest.json, .places.json or index.html. Use before saying that such a change is safe.
+description: Check that dojo-archive never loses or worsens a saved photo, video or post. It kills the real sync at every point and tests recovery. Use after a change to how dojo_archive.py writes, replaces or deletes files, feed.json, .manifest.json, .places.json or index.html. Use before saying that such a change is safe.
 ---
 
 # Verify archive durability
 
-**Promise.** Once the tool saves a photo or post, no run, however it dies, can lose it or worsen it. The next run repairs everything with no manual step.
+**Promise.** Once the tool saves a photo, a video or a post, no run, however it dies, can lose it or worsen it. A file that an older version saved stays, even when the tool no longer wants it. The next run repairs everything with no manual step.
 
 **Harm if broken.** ClassDojo can drop old posts, so the archive may hold the only copy of a child's photo.
 
@@ -19,7 +19,7 @@ git diff e105dee -- dojo_archive.py
 
 | Promise | Covered code in `dojo_archive.py` |
 | --- | --- |
-| `no-loss` | `download`, `retag`, `finish`, `sniff`, `saved_suffix`, `check_download`, `save_note`, `atomic_write`, `index_saved`, `delete_others` |
+| `no-loss` | `download`, `retag`, `finish`, `sniff`, `saved_suffix`, `check_download`, `atomic_write`, `index_saved`, `saved_key`, `save_all`, `delete_others` |
 | `recovers` | `run`, `save_all`, `atomic_write`, `PlaceBook`, `Manifest`, `delete_others`, `finish`, `write_metadata`, `read_capture_time`, `is_own_date` |
 | `settles` | `save_all`, `Manifest`, `newest_owners`, `fingerprint`, `index_saved`, `saved_key` |
 | `keeps-history` | `merge_feed`, `merge_item`, `merge_fields`, `merge_attachments`, `run`, `write_gallery` |
@@ -30,7 +30,7 @@ git diff e105dee -- dojo_archive.py
 
 ## Run it
 
-From the repository root. It needs `uv` and `exiftool`, and no ClassDojo session. It takes about 8 minutes:
+From the repository root. It needs `uv` and `exiftool`, and no ClassDojo session. It takes about 4 minutes:
 
 ```sh
 uv run python .agents/skills/verify-archive-durability/check.py
@@ -52,12 +52,14 @@ The case-only mutant needs a case-insensitive disk, the default on macOS and Win
 
 `check.py` runs the real `dojo_archive.run` and real ExifTool in a temporary folder. Only the network is fake, and it skips login. It records the folder after each line of `dojo_archive.py`, and halfway through each `Path.write_text`. Those are all the states a kill can leave. For each distinct state, it restores the folder, runs the sync again, and then runs it once more.
 
-The fake network gives each run new image data for every photo. So a second download of a saved photo always shows as changed image data. After each recovery, ExifTool reads every photo. Its post text, its date and its GPS must match the feed.
+The fake network gives each run new image data for every photo. So a second download of a saved photo always shows as changed image data. After each recovery, ExifTool reads every photo that the tool wants. Its post text, its date and its GPS must match the feed.
+
+The feed also holds a letter, a graphic and a flyer that the tool must not save. The fake network fails a run that downloads one.
 
 | Promise | Plain meaning |
 | --- | --- |
-| `no-loss` | In every kill state, each saved item still has a complete copy. `feed.json` holds all that it held, and `index.html` is whole. The parent's own files in other folders are unchanged. |
-| `recovers` | The next run succeeds and leaves 1 copy of each item, with no partial files. Each photo carries the tags of its post. |
+| `no-loss` | In every kill state, each saved item still has a complete copy. `feed.json` holds all that it held, and `index.html` is whole. The parent's own files in other folders are unchanged. Notes and files from an older version are unchanged, also after recovery. |
+| `recovers` | The next run succeeds and leaves 1 copy of each wanted item, with no partial files. It saves no file that it does not want. Each photo carries the tags of its post. |
 | `settles` | The run after that downloads nothing, saves nothing and changes no file. |
 | `keeps-history` | A post that left the feed, or a later reply that holds less, costs nothing in the files, `feed.json` or `index.html`. |
 | `page-links` | Each link in `index.html` opens a real, finished file. |
@@ -65,7 +67,7 @@ The fake network gives each run new image data for every photo. So a second down
 
 ## Scope
 
-**Bounds.** 12 scenarios, with up to 4 posts and 4 files:
+**Bounds.** 13 scenarios, with up to 4 posts and 4 saved files:
 
 - First sync into an empty folder.
 - A post changes, so the tool re-tags its files and moves them to a new date.
@@ -74,8 +76,9 @@ The fake network gives each run new image data for every photo. So a second down
 - A post changes between the killed run and the next run.
 - First run without ExifTool, then with ExifTool and a changed post. After recovery each photo has tags, and a later run without ExifTool changes nothing.
 - A later reply has a placeholder and blanked text.
-- A new download answers 200 with an error page, a plain-text error, or HTML at a `.txt` link.
+- A new download answers 200 with an error page or a plain-text error.
 - The parent keeps copies with the same names in a folder that is not a year.
+- An older version saved a note, a letter and a flyer, and then a post changes.
 - A class name changes only in case.
 - Locations go off and every saved link is dead, so the tool removes GPS from the saved files.
 - Every link is dead and posts change, so the tool re-tags the saved files with no download.
@@ -95,6 +98,7 @@ The fake network gives each run new image data for every photo. So a second down
 - Ctrl-C and a damaged `feed.json` or `.manifest.json`. Unit tests cover them.
 - A wrong answer from the real ClassDojo API. `verify-dojo` covers the real API.
 - A photo's own capture date. The fixtures hold none, so unit tests cover it.
+- Which files the rule wants. Unit tests cover each part of the rule.
 
 This check is exhaustive only within these bounds. It is not a mathematical proof.
 
