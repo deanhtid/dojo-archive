@@ -1,0 +1,45 @@
+[project]
+name = "dojo-archive"
+version = "1.0.0"
+description = "Archive your children's ClassDojo feed to your own computer"
+readme = "README.md"
+license = "MIT"
+license-files = ["LICENSE"]
+requires-python = ">=3.15"
+dependencies = [
+    "requests>=2.34.2",
+    "tzdata; sys_platform == 'win32'",
+]
+
+[project.scripts]
+dojo-archive = "dojo_archive:main"
+
+[build-system]
+requires = ["setuptools>=80"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+py-modules = ["dojo_archive"]
+
+[tool.ruff]
+line-length = 100
+
+[tool.ruff.lint]
+select = ["B", "E", "F", "I", "RUF", "S", "SIM", "UP"]
+# ExifTool runs from PATH by design, with no shell.
+ignore = ["S603", "S607"]
+
+[tool.ruff.lint.per-file-ignores]
+"tests/*" = ["S"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["."]
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "ruff>=0.17.4",
+    "ty>=0.0.99",
+    "types-requests>=2.33.0.20261030",
+]

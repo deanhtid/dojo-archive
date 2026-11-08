@@ -1,0 +1,15 @@
+.env
+.env.1password
+.dojo-session.txt
+.geocode-cache.json
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+classdojo_output*/
+.idea/
+*.egg-info/
+build/
+dist/
+.audit/
+.verify-*

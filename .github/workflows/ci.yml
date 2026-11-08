@@ -1,0 +1,42 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-latest, macos-latest, windows-latest]
+    runs-on: ${{ matrix.os }}
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v6
+      - name: Install ExifTool on Linux
+        if: runner.os == 'Linux'
+        run: sudo apt-get update && sudo apt-get install -y libimage-exiftool-perl
+      - name: Install ExifTool on macOS
+        if: runner.os == 'macOS'
+        run: brew install exiftool
+      - name: Install ExifTool on Windows
+        if: runner.os == 'Windows'
+        run: choco install exiftool -y
+      - run: uv sync
+      - run: uv run ty check dojo_archive.py
+      - run: uv run pytest
+      - run: uv build
+      - run: uvx --python 3.15 --from dist/*.whl dojo-archive --help
+      - name: Check style
+        if: runner.os == 'Linux'
+        run: uv run ruff check . && uv run ruff format --check .
+      - name: Check archive durability
+        if: runner.os == 'Linux'
+        run: uv run python .agents/skills/verify-archive-durability/check.py
